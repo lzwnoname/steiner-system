@@ -1,0 +1,104 @@
+Now presolve for A13:
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+The total number of A13 is 35695773
+Now presolve for A12:
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+The total number of A12 is 35695773
+Now presolve for A11:
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+The total number of A11 is 35695773
+Now presolve for A10:
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+The total number of A10 is 35695773
+Now presolve for A9:
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+The total number of A9 is 35695773
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+Concating 13
+For13: 0 2 14
+For13: 0 11 15
+For13: 1 3 14
+For13: 1 10 15
+For13: 2 9 15
+For13: 3 8 15
+For13: 4 6 14
+For13: 4 7 15
+For13: 5 7 14
+For13: 5 6 15
+For13: 8 10 14
+For13: 9 11 14
+Already having 13 items
+New items:
+Concating 12
+For12: 0 3 14
+For12: 0 10 15
+For12: 1 2 14
+For12: 1 11 15
+For12: 2 8 15
+For12: 3 9 15
+For12: 4 6 15
+For12: 4 7 14
+For12: 5 6 14
+For12: 5 7 15
+For12: 8 11 14
+For12: 9 10 14
+Already having 13 items
+New items:
+Concating 11
+For11: 0 4 14
+For11: 0 13 15
+For11: 1 5 14
+For11: 1 12 15
+For11: 2 7 15
+For11: 2 6 14
+For11: 3 6 15
+For11: 3 7 14
+For11: 4 9 15
+For11: 5 8 15
+For11: 8 12 14
+For11: 9 13 14
+Already having 13 items
+New items:
+Concating 10
+For10: 0 5 14
+For10: 0 12 15
+For10: 1 4 14
+For10: 1 13 15
+For10: 2 6 15
+For10: 2 7 14
+For10: 3 7 15
+For10: 3 6 14
+For10: 4 8 15
+For10: 8 13 14
+For10: 5 9 15
+For10: 9 12 14
+Already having 13 items
+New items:
+Concating 9
+For9: 0 7 15
+For9: 0 6 14
+For9: 1 6 15
+For9: 1 7 14
+For9: 2 5 14
+For9: 2 13 15
+For9: 3 4 14
+For9: 3 12 15
+For9: 4 11 15
+For9: 5 10 15
+For9: 10 12 14
+For9: 11 13 14
+Already having 13 items
+New items:
+The block have 130
