@@ -35,7 +35,7 @@ struct tuple3{
     int a, b, c;
     int state;
 
-    tuple3() {}
+    tuple3() : a(0), b(0), c(0), state(0) {}
 
     tuple3(int a, int b, int c) {
         this->a = a;
@@ -195,7 +195,7 @@ void output_pair(ull s, int las, tuple3 sed[])
         Pii& retPair = reverseMapBit2Pair(x);
 		int tmp[3] = {sed_map[retPair.first], sed_map[retPair.second], sed_map[las]};
 		sort(tmp, tmp + 3);
-        sed[len++] = {tmp[0], tmp[1], tmp[2]};
+        sed[len++] = (tuple3){tmp[0], tmp[1], tmp[2]};
         s -= x;
     }
 }
@@ -211,7 +211,7 @@ void output_triple(ull s, int t, bool high, tuple3 sed[])
 		int tmp[3] = {sed_map[element0_9[id + offset][0]],
             sed_map[element0_9[id + offset][1]], sed_map[element0_9[id + offset][2]]};
         sort(tmp, tmp + 3);
-        sed[len++] = {tmp[0], tmp[1], tmp[2]};
+        sed[len++] = (tuple3){tmp[0], tmp[1], tmp[2]};
         s -= x;
     }
 }
@@ -326,6 +326,7 @@ const int Hash0_11Num = 3e6;
 int matchings0_11[MatchingNums_0_11][N_16];
 int ordMatchings0_11[Hash0_11Num]; //哈希范围其实到12的6次方<3e6
 int matchings0_11Cnt;
+
 void search0_11Matching(int dep, ull m) {
     if (dep == 6) {
         for (int i = 0 ; i < 12 ; i++)
@@ -367,7 +368,6 @@ bool check(AzPreEntity& item, int size, int z) {
     return true;
 }
 
-int tuples0_6Ord[1 << 7];
 int tuples0_6FullMask;
 
 const int TUPLES0_6LIMIT = 10;
@@ -377,15 +377,19 @@ int tuples0_6[TUPLES0_6NUM][4], triples0_6[TUPLES0_6NUM][4], triplesBits2Ord[1 <
 
 int m1Values[N_16];
 
+int DEBUGVARIABLE = 0;
+
 void ConcatAi(int z) { //递归拼接Az
     if (z == 6) {//递归到边界：0 直接返回， x 做折半拼接，此时还剩下6个block需要拼接
         bool tmpMask[1 << N_16] = {0};
         int cnt = 0;
-        int tuples0_6Mask = 0; //计算目前0_6的三元组一共占位了多少
+        ull tuples0_6Mask = 0; //计算目前0_6的三元组一共占位了多少
         for (int i = 15 ; i > z ; i--) {
             for (int j = 0 ; j < Num_15 ; j++) {
+                assert(__builtin_popcount(Ai[i][j].state) == 3);
+                assert((Ai[i][j].state & (1 << i)) == 0);
                 if (Ai[i][j].state <= (1 << 6) + (1 << 5) + (1 << 4))
-                    tuples0_6Mask |= tuples0_6Ord[Ai[i][j].state];
+                    tuples0_6Mask |= triplesBits2Ord[Ai[i][j].state];
                 int val = Ai[i][j].state | (1 << i);
                 if (tmpMask[val])
                     continue;
@@ -406,22 +410,30 @@ void ConcatAi(int z) { //递归拼接Az
         }
         while (ans <= r && tuple0_6states[ans].first == tuples0_6Mask) {
             cout << tuple0_6states[ans].second << endl;
+            ans++;
+            exit(0);
         }
+        DEBUGVARIABLE++;
+        if (DEBUGVARIABLE == 10) {
+            cout << "did not find ans.";
+            exit(0);
+        }
+        return;
     }
-    cout << "Concating " << z << endl;
     
     int len = 13;
     for (int i = 0 ; i < len ; i++) //处理目前已经有的Az部分的mask
         mask[Ai[z][i].state]++;
 
     int matching0_11Ord = ordMatchings0_11[m1Values[z]];
+    cout << "Concating " << z << "with m1=" << matching0_11Ord << endl;
     for (auto item : preSolveAz[z][matching0_11Ord]) { //开始拼接剩余部分, 处理mask
         //检查是否与之前拼接的发生了三元组重复
         if (!check(item, Num_15 - len, z))
             continue;
         printf("New items:\n");
         for (int i = len ; i < Num_15 ; i++) {
-            Ai[z][i] = move(item.sed[i - len]); //移动语义避免直接赋值
+            Ai[z][i] = item.sed[i - len]; //移动语义避免直接赋值
             mask[Ai[z][i].state]++;
         }
         ConcatAi(z - 1);
@@ -484,6 +496,7 @@ void PreSolveForAi(int z) {
     static bool isEntryFirst = false;
     if (!isEntryFirst) {
         matchings0_11Cnt = 0;
+        memset(ordMatchings0_11, -1, sizeof(ordMatchings0_11));
         search0_11Matching(0, 0);
         isEntryFirst = true;
     }
@@ -494,6 +507,7 @@ void PreSolveForAi(int z) {
         if (i != z && i != (z ^ 1)) {
             reorder[z][i] = tmpcnt;
             invReorder[z][tmpcnt] = i;
+            tmpcnt++;
         }
 
     int AzCnt = 0; //给Az进行编号
@@ -628,23 +642,28 @@ void search0_6Tuples(int dep, int las, ull state, ull triplesSelect) {
         int allBitsValue = (1 << tuples0_6[i][0]) + (1 << tuples0_6[i][1])
                         + (1 << tuples0_6[i][2]) + (1 << tuples0_6[i][3]);
         int tmpValue = 0;
-        for (int j = 0 ; j < 4 ; j++)
-            tmpValue |= allBitsValue - (1 << tuples0_6[i][j]);
+        for (int j = 0 ; j < 4 ; j++) {
+            int triValue = allBitsValue ^ (1 << tuples0_6[i][j]);
+            tmpValue |= 1 << triplesBits2Ord[triValue];
+        }
         if (triplesSelect & tmpValue) continue;
         search0_6Tuples(dep + 1, i, state | (1ull << (ull)i), triplesSelect | tmpValue);
     }
 }
 
 void generate0_6Tuples() {
+    cnt = 0;
     for (int i = 0 ; i < 7 ; i++)
         for (int j = i + 1 ; j < 7 ; j++)
             for (int k = j + 1 ; k < 7 ; k++) {
                 triples0_6[cnt][0] = i;
                 triples0_6[cnt][1] = j;
-                triples0_6[cnt++][2] = k;
+                triples0_6[cnt][2] = k;
                 triplesBits2Ord[(1 << i) + (1 << j) + (1 << k)] = cnt;
                 tuples0_6FullMask |= 1ull << (ull)cnt;
+                cnt++;
             }
+    cnt = 0;
     for (int i = 0 ; i < 7 ; i++)
         for (int j = i + 1 ; j < 7 ; j++)
             for (int k = j + 1 ; k < 7 ; k++)
@@ -655,6 +674,7 @@ void generate0_6Tuples() {
                     tuples0_6[cnt++][3] = l;
                 }
     search0_6Tuples(0, -1, 0, 0);
+    sort(tuple0_6states.begin(), tuple0_6states.end());
 }
 
 int main()
@@ -676,7 +696,7 @@ int main()
     cin.clear();
 
 	CNT = 0;
-
+    generate0_6Tuples();
     solveForAi();
 	
 	printf("The preprocessing of classfing A14 is done, the number of possible A14 is %lld.\n", CNT);
