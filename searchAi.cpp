@@ -333,6 +333,7 @@ void search0_11Matching(int dep, ull m) {
             matchings0_11[matchings0_11Cnt][i] = matching[i];
         ordMatchings0_11[m] = matchings0_11Cnt;
         matchings0_11Cnt++;
+        return;
     }
     int j = -1;
     do { j++; } while (j < 12 && matching[j] != -1);
@@ -348,21 +349,21 @@ void search0_11Matching(int dep, ull m) {
 const int NumsA14 = 35595773;
 struct AzPreEntity {
     int AzNum;
-    tuple3 sed[24];
+    int sed[24];
 };
 vector<AzPreEntity> preSolveAz[N_16][MatchingNums_0_11];
 int reorder[N_16][N_16], invReorder[N_16][N_16];
 
-bool check(AzPreEntity& item, int size, int z) {
+inline bool check(AzPreEntity& item, int size, int z) {
     int highBitsMask = ((1 << N_16) - 1) ^ ((1 << z + 1) - 1);
     for (int i = 0 ; i < size ; i++) {
-        int highVal = item.sed[i].state & highBitsMask;
+        int highVal = item.sed[i] & highBitsMask;
         if (highVal) {
             int tmp = lowbit(highVal);
-            if (!mask[item.sed[i].state ^ tmp ^ (1 << z)])
+            if (!mask[item.sed[i] ^ tmp ^ (1 << z)])
                 return false;
         }
-        if (mask[item.sed[i].state])
+        if (mask[item.sed[i]])
             return false;
     }
     return true;
@@ -375,9 +376,16 @@ const int TUPLES0_6NUM = 35;
 vector<pair<ull, ull> > tuple0_6states;
 int tuples0_6[TUPLES0_6NUM][4], triples0_6[TUPLES0_6NUM][4], triplesBits2Ord[1 << 8];
 
-int m1Values[N_16];
+ull m1Values[N_16];
 
 int DEBUGVARIABLE = 0;
+
+tuple3 extract2tuple3(int val) {
+    int a = lowbit(val);
+    int b = lowbit(val ^ a);
+    int c = lowbit(val ^ a ^ b);
+    return (tuple3){a, b, c};
+}
 
 void ConcatAi(int z) { //递归拼接Az
     if (z == 6) {//递归到边界：0 直接返回， x 做折半拼接，此时还剩下6个block需要拼接
@@ -426,14 +434,16 @@ void ConcatAi(int z) { //递归拼接Az
         mask[Ai[z][i].state]++;
 
     int matching0_11Ord = ordMatchings0_11[m1Values[z]];
-    cout << "Concating " << z << "with m1=" << matching0_11Ord << endl;
+    assert(matching0_11Ord != -1);
+    cout << "Concating " << z << ", with m1=" << matching0_11Ord
+        << ", with entity number=" << preSolveAz[z][matching0_11Ord].size() << endl;
     for (auto item : preSolveAz[z][matching0_11Ord]) { //开始拼接剩余部分, 处理mask
         //检查是否与之前拼接的发生了三元组重复
         if (!check(item, Num_15 - len, z))
             continue;
         printf("New items:\n");
         for (int i = len ; i < Num_15 ; i++) {
-            Ai[z][i] = item.sed[i - len]; //移动语义避免直接赋值
+            Ai[z][i] = extract2tuple3(item.sed[i - len]); //移动语义避免直接赋值
             mask[Ai[z][i].state]++;
         }
         ConcatAi(z - 1);
@@ -448,8 +458,8 @@ void ConcatAi(int z) { //递归拼接Az
 inline void GenerateSQS16() {
     for (int z = 13 ; z > 6 ; z--) {
         int len = 0;
+        int tmpMatching[12] = {0};
         Ai[z][len++] = tuple3{z ^ 1, 14, 15};
-        ull m1 = 0;
         for (int i = 0 ; i < Num_15 ; i++) { //处理A15和A14与Az的公共部分
             if ((Ai[15][i].state & (1 << z)) && !(Ai[15][i].state & (1 << 14))) {
                 int val = Ai[15][i].state - (1 << z);
@@ -464,10 +474,16 @@ inline void GenerateSQS16() {
                 int tmp = lowbit(val);
                 val -= tmp;
                 Ai[z][len++] = tuple3{log_2[tmp], log_2[lowbit(val)], 14};
-                m1 = m1 * 12 + reorder[z][Ai[z][len - 1].b]; //这一部分只依赖于参数z，因此可以预处理，就不需要整个放入显卡
+                assert(Ai[z][len - 1].a != (z ^ 1));
+                assert(Ai[z][len - 1].b != (z ^ 1));
+                tmpMatching[reorder[z][Ai[z][len - 1].a]] = reorder[z][Ai[z][len - 1].b]; //这一部分只依赖于参数z，因此可以预处理，就不需要整个放入显卡
                 cout << "For" << z << ": " << Ai[z][len - 1].a << ' ' << Ai[z][len - 1].b << ' ' << Ai[z][len - 1].c << endl;
             }
         }
+        ull m1 = 0;
+        for (int i = 0 ; i < 12 ; i++)
+            if (tmpMatching[i] > i)
+                m1 = m1 * 12 + tmpMatching[i];
         m1Values[z] = m1;
         cout << "Already have " << len << " items." << endl;
     }
@@ -499,6 +515,7 @@ void PreSolveForAi(int z) {
         memset(ordMatchings0_11, -1, sizeof(ordMatchings0_11));
         search0_11Matching(0, 0);
         isEntryFirst = true;
+        cout << "0-11 matching cnt: " << matchings0_11Cnt << endl;
     }
 
     int tmpcnt = 0;
@@ -544,24 +561,31 @@ void PreSolveForAi(int z) {
                                     
                                     //开始计算A14,z并将其作为关键字保存到哈希表
                                     //我们对0-11匹配进行如下Hash：仅考虑matching[i]>i，对i从小到大将matching[i]串起来
-                                    ull m1 = 0;
                                     AzPreEntity Az;
                                     Az.AzNum = AzCnt;
+                                    int tmpMatching[12] = {0};
                                     int sedCnt = 0;
                                     for (int iSed = 0 ; iSed < Num_15 ; iSed++) {
                                         if ((Ai[z][iSed].state & (1 << 14)) && 
                                             !(Ai[z][iSed].state & (1 << 15))) { //判断是否是和A14的共同结构
                                             int val = Ai[z][iSed].state - (1 << 14);
-                                            val -= lowbit(val);
-                                            int index = log_2[val];
-                                            m1 = m1 * 12 + reorder[z][index];
+                                            int firstBit = lowbit(val);
+                                            int secondBit = lowbit(val - firstBit);
+                                            assert(firstBit != (z ^ 1));
+                                            assert(secondBit != (z ^ 1));
+                                            tmpMatching[reorder[z][log_2[firstBit]]] = reorder[z][log_2[secondBit]];
                                         }
                                         
                                         if ((Ai[z][iSed].state & (1 << 14)) || 
                                             (Ai[z][iSed].state & (1 << 15)))
                                             continue;
-                                        Az.sed[sedCnt++] = Ai[z][iSed]; //将剩下的tuple存到哈希表里
+
+                                        Az.sed[sedCnt++] = Ai[z][iSed].state; //将剩下的tuple存到哈希表里
                                     }
+                                    ull m1 = 0;
+                                    for (int i = 0 ; i < 12 ; i++)
+                                        if (tmpMatching[i] > i)
+                                            m1 = m1 * 12 + tmpMatching[i];
                                     preSolveAz[z][ordMatchings0_11[m1]].pb(Az);
                                     AzCnt++;
                                 }

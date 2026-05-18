@@ -444,105 +444,139 @@ if (matching0_11Ord < 0) {
 
 ---
 
-## Bug 15：`m1Values[12]` 出现 `0` 表明 m1 进制项中含 0（reorder 越界 / 排除元素被取）
+## ~~Bug 15：`z^1` 硬编码假设~~（已撤回）
 
-**位置**：`GenerateSQS16` 中 461–467 行；`reorder[z]` 填充在 `PreSolveForAi(z)` 502–509 行。
+**结论：经用户指出并复核，此项 *不是* bug。**
 
-**前提复核**：`reorder[z][i]` 仅对 `i ∈ {0..13}\{z, z^1}` 填值（12 个真实元素映射到 0..11），其余位置（i = z, z^1, 14, 15）保持默认 0。
+**复核要点**：
 
-**怀疑场景**：当前 `Ai[15]` 输入恰巧 son_blocks 是 `(0,1),(2,3),...,(12,13)`，每个 z 的 `z^1` 恰好就是其在 son_block 中的"伴随元素 w"，所以理论上 `reorder[z]` 排除 z 与 z^1 是正确的。但若**未来换不同的 A_15**（其 son_blocks 不是按 `z^1` 配对），则 `reorder[z]` 排除的元素错误，会让 m1 计算把 reorder[z][w] 当 reorder[z][z^1]，进而：
+1. `Ai[15]` 是固定输入（`NewS(2,3,15).txt` 第 1 行的 A_15），其 son_blocks 永远是 `(0,1)(2,3)(4,5)(6,7)(8,9)(A,B)(C,D)`。
+2. 验证：第 1 行中含 14（=`E`）的三元组为 `01E 23E 45E 67E 89E ABE CDE`，去掉 14 后正是 `(z, z^1)` 配对。
+3. 因此每个 z 的"伴随元素 w" 恒等于 `z^1`，代码 `Ai[z][len++] = tuple3{z^1, 14, 15}` 与 `if (i != z && i != (z ^ 1))` **不是硬编码假设**，而是针对固定输入做出的**正确等价简化**。
 
-- A_14 中含 z 不含 15 的 6 条三元组的"另两个端点"包含了 w（即原本应被排除的伴随元素），但 `reorder[z][w]` 是被填了的合法虚拟编号 ⇒ 串接的 hash 错位。
+⇒ 没有"换 A_15 输入"这一使用场景，`partner[z]` 抽象多余，本条作废。
 
-**对当前测试输入的影响**：此 bug **暂时不触发**（因为 son_blocks 恰好是 `(z, z^1)` 形式）。但代码的"`z^1`"硬编码是脆弱设计。
+---
 
-**修复**：
+## ~~Bug 16：`AzPreEntity::sed[24]` 越界风险~~（已撤回）
+
+**结论：经用户指出并复核，此项 *不是* bug。**
+
+**复核要点**：A_15 与 A_14 的"共同子结构三元组数"是 SQS 的固定数学性质，恒等于 13：
+
+- 1 个 (z^1, 14, 15)（即 `z^1` 与 14、15 共属同一四元组的退化三元组）；
+- 6 个含 15 不含 14 形如 (p, q, 15)；
+- 6 个含 14 不含 15 形如 (p, q, 14)。
+
+⇒ A_z 中"既不含 14 也不含 15"的项恒等于 35 - 13 = **22**，所以 `sedCnt` 恒等于 22，`sed[24]` **永远不会越界**，并且 ConcatAi 中 `size = Num_15 - len = 22` 也恰好不会读到 sed[22]/sed[23]。
+
+栈残留 / 默认构造的潜在隐患可由 Bug 12 修复覆盖。本条作废。
+
+---
+
+## ~~Bug 17：伪命中桶 0 导致无效递归~~（已撤回，并入 Bug 14）
+
+**结论：此项不是独立 bug，应作为 Bug 14 修复说明的延伸。**
+
+Bug 17 描述的"未注册 hash 错误命中桶 0"现象**完全依附于 Bug 14**。一旦 Bug 14 已用 `-1` 哨兵 + `< 0` 过滤修复，伪命中现象自然消除。单独列出是冗余，并入 Bug 14。
+
+---
+
+## ~~Bug 18：性能向 push_back 复制开销~~（已撤回）
+
+不是正确性问题，从 bug 清单中删除。若后续需要内存优化，可在 PreSolveForAi 中改用 `emplace_back` 或预 `reserve`，但与当前调试主线无关。
+
+---
+
+## ✦ 第三轮：撤回 Bug 15-18 后的真实问题定位 ✦
+
+> 现状：Bug 1–14 已修复。仍观察到 ConcatAi 卡在 z=12/13 无法继续深入。
+> 但既然 Bug 15-18 不成立，需要重新定位真正的卡点。下面列出目前**仍然存疑、需要进一步证据**的方向，**不再标号为正式 bug**，待运行统计反馈后再判断。
+
+### 待验证方向 A：搜索本身的稀疏性（很可能不是 bug）
+
+A_14 候选有 35,695,773 个，但绝大多数无法扩展为合法 SQS(16)。在 ConcatAi(13) → ConcatAi(12) → ... 每层 `check` 都会刷掉绝大多数候选。这是搜索剪枝的正常表现。
+
+**验证方式**：在 `ConcatAi` 中加桶大小、check 通过率统计：
 
 ```cpp
-// 用 son_blocks 推出每个 z 的伴随元素 w（即与 z 同对的另一元素）
-int partner[N_16];
-memset(partner, -1, sizeof(partner));
-for (int i = 0 ; i < 7 ; i++) {
-    partner[son_blocks_for14[i].first]  = son_blocks_for14[i].second;
-    partner[son_blocks_for14[i].second] = son_blocks_for14[i].first;
+int matching0_11Ord = ordMatchings0_11[m1Values[z]];
+if (matching0_11Ord < 0) {
+    static long long unregCnt = 0;
+    if (++unregCnt < 100) cout << "Unreg hash z=" << z << " m1=" << m1Values[z] << endl;
+    return;
 }
-// 之后所有用到 z^1 的地方改成 partner[z]
-Ai[z][len++] = tuple3{partner[z], 14, 15};
-...
-for (int i = 0 ; i < N_16 - 2 ; i++)
-    if (i != z && i != partner[z]) {
-        reorder[z][i] = tmpcnt; tmpcnt++;
+int bucketSize = preSolveAz[z][matching0_11Ord].size();
+int passedCheck = 0;
+for (auto& item : preSolveAz[z][matching0_11Ord])
+    if (check(item, Num_15 - len, z)) passedCheck++;
+cerr << "z=" << z << " bucket[" << matching0_11Ord
+     << "] size=" << bucketSize << " passed=" << passedCheck << endl;
+```
+
+观察指标：
+1. **Unreg hash 是否大量出现**：若是，则 A_14 端 m1 与 PreSolve 端 m1 仍不一致（需重审 Bug 9 撤回结论）。
+2. **bucketSize 分布**：10395 个桶平均 ~3400 项是否合理。
+3. **passedCheck 分布**：若 z=13 时 passedCheck 极小（<10），稀疏性主导，非 bug。
+
+### 待验证方向 B：`check()` 高位端点检查不完整
+
+```cpp
+bool check(AzPreEntity& item, int size, int z) {
+    int highBitsMask = ((1 << N_16) - 1) ^ ((1 << z + 1) - 1);
+    for (int i = 0 ; i < size ; i++) {
+        int highVal = item.sed[i].state & highBitsMask;
+        if (highVal) {
+            int tmp = lowbit(highVal);
+            if (!mask[item.sed[i].state ^ tmp ^ (1 << z)])
+                return false;
+        }
+        if (mask[item.sed[i].state]) return false;
     }
-```
-
----
-
-## Bug 16：`AzPreEntity::sed[24]` 大小固定为 24，写入时可能超出（潜在）
-
-**位置**：350 行声明；549 行写入 `Az.sed[sedCnt++] = Ai[z][iSed]`。
-
-**风险**：理论上 `sedCnt = Num_15 - 13 = 22`，未越界。但若 PRE_SOLVE 阶段 `mask` 数据异常导致候选三元组中"含 14 或 15"的判定逻辑错（例如 `Generate_seeds` 中三元组的 `state` 还未被重设时进入 PreSolveForAi 的 `iSed` 循环），可能让 `sedCnt > 22`。
-
-**当前代码顺序**：
-
-```cpp
-Generate_seeds(..., Ai[z]);   // 末尾会 sort + 重设 state
-// 这里 Ai[z][0..34].state 是正确的 3-bit 真实掩码
-for (iSed = 0; iSed < Num_15; iSed++) {
-    if ((Ai[z][iSed].state & (1<<14)) && !(Ai[z][iSed].state & (1<<15))) { m1 += ...; }
-    if ((state & (1<<14)) || (state & (1<<15))) continue;
-    Az.sed[sedCnt++] = Ai[z][iSed];
+    return true;
 }
 ```
 
-正常情况下 sedCnt 恰好 22 ✓。但若 `state` 字段**没被正确重设**（参考 Bug 12）—— 比如 `tuple3` 默认构造创建的 `Az` 局部变量内 `sed[24]` 全是垃圾 state —— 这里只写前 22 项，**后 2 项 `sed[22], sed[23]` 保持垃圾**。`AzPreEntity Az;` 是**局部变量**（行 534），构造器为 `tuple3 sed[24]` → 调用 `tuple3()`（默认构造），不初始化任何字段。
+`sed[i]` 可能含**多个**高于 z 的端点（例如 z=9 时三元组 (5, 10, 11) 含 10 与 11 两个高位端点），目前只对 `lowbit(highVal)` 一个端点做"替换为 z 后是否在 mask 中"的对偶性检查。
 
-⇒ `Az.sed[22], Az.sed[23]` 的 `(a, b, c, state)` 是**栈上残留的垃圾值**。
+**这是否是 bug**：
+- 漏检不会导致"卡住" —— 漏检只会让**更多**项通过 check ⇒ 递归更深 ⇒ 不会卡在 z=12。
+- 但若漏检出错的项进入下层后又被 mask 累计冲突卡掉，反而表现成"看似进了下层却很快回退"。
 
-后续 `preSolveAz[z][...].pb(Az);` 把整个 `Az` 拷贝进 vector，垃圾也跟着进。
+**结论**：不会导致"卡在 z=12 不下降"，**不是当前现象的根因**。可作为剪枝优化项，但不紧急。
 
-**为什么是 bug**：ConcatAi 的 check / 读取只用 `sed[0..21]`（`size = Num_15 - len = 22`）⇒ 看似不用 sed[22], sed[23]。但**check 的范围是 `for (i = 0; i < size; i++)`**，size=22 ⇒ 不读 sed[22], sed[23] ✓。**实际不影响 check**。
+### 待验证方向 C：`mask` 在 ConcatAi 进入下一层前未正确累加 / 回溯
 
-但若代码后续修改了 `len`（从 13 改为更小），则 size 会 > 22，触及垃圾。**当前严格 22 ⇒ 暂安全**。
+```cpp
+// ConcatAi(z) 中（伪代码）：
+for (auto item : preSolveAz[z][matching0_11Ord]) {
+    if (!check(item, ..., z)) continue;
+    // 把 item.sed[0..21] 写入 Ai[z][13..34] 并累加到 mask
+    for (int i = 0; i < Num_15 - len; i++) {
+        Ai[z][len + i] = item.sed[i];
+        mask[item.sed[i].state] = true;   // 必须！
+    }
+    ConcatAi(z - 1);
+    // 回溯：撤销 mask
+    for (int i = 0; i < Num_15 - len; i++)
+        mask[item.sed[i].state] = false;
+}
+```
 
-不过仍建议修：把 `tuple3 sed[24]` 改为 `tuple3 sed[24] = {}`（C++11 值初始化）或在构造时 `memset`。
+若**未正确累加 / 回溯 mask**，下一层的 `check` 看不到上一层确定的项 ⇒ 几乎所有桶都过 check ⇒ 但深入到边界后会因 `tmpMask[val]` 重复而 cnt 异常（这与 Bug 10 现象呼应）。
 
----
-
-## Bug 17：A_14 候选的"伪命中桶 0"导致大量无效递归
-
-**与 Bug 14 联动**。当 `m1Values[z]` 落在未注册 hash 时，`preSolveAz[z][0]` 桶被错误读取。该桶里的 `AzPreEntity` 对应的实际 perfect matching 是 `(0,1),(2,3),...,(10,11)`，但当前递归路径上的 A_z 与 A_14 共同孙子结构却**不是这个 matching**。
-
-**结果**：
-- 桶里 item 的 22 条三元组的端点分布与"理应满足"的端点分布**完全错配**；
-- 但 `check` 函数只检查"mask 中是否已存在某些三元组" + "mask 中是否能查到带 z 替代的等价三元组"——**它不检查端点是否对得上 A_z 与 A_14 的孙子结构**；
-- 部分 item 因为巧合（mask 中某些三元组确实存在）**伪通过 check**，进入 `ConcatAi(z-1)`；
-- 越深入冲突越多，最终在 z=8、7 处所有桶都无法通过 check（因为前面已经被错误的内容污染）。
-
-**这就是"递归不能深入到 z=8、7"的根本原因**之一。
-
-**修复**：见 Bug 14（用哨兵值过滤未注册 hash）。
-
----
-
-## Bug 18（强烈怀疑）：`AzPreEntity Az;` 在 PreSolveForAi 中是局部变量，每次循环创建 + push_back 大量复制
-
-**位置**：534 行。
-
-**性能问题**（不是正确性，但解释 35,695,773 个候选的内存压力）：每次产生 A_z 候选都构造一个 `AzPreEntity`（含 24 个 `tuple3`，约 24*16 = 384 字节），**push_back** 到 vector 时拷贝。35M 候选 × 384B = ~13GB。
-
-**修复（性能向）**：用 `emplace_back` + 直接构造；或预分配 `vector::reserve(NumsA14)`。
+**待办**：核对 `ConcatAi` 中 mask 累加 / 回溯逻辑是否对称完整。
 
 ---
 
-## 修订后的优先修复顺序（合并新旧）
+## 修订后的优先修复顺序（终版）
 
-1. **Bug 14**（关键）：`ordMatchings0_11` 用 -1 哨兵；ConcatAi 中遇到未注册 hash 直接返回，避免污染递归。
-2. **Bug 2 + 4 + 5 + 6 + 7**：边界折半数据正确（仍未到 z=6，但需提前修好）。
-3. **Bug 1**：z=6 边界 return + ans++（已修部分）。
+1. **Bug 14**（关键，已修）：`ordMatchings0_11` 用 -1 哨兵；ConcatAi 中遇到未注册 hash 直接返回。
+2. **Bug 2 + 4 + 5 + 6 + 7**：边界折半数据正确（已修）。
+3. **Bug 1**：z=6 边界 return + ans++（已修）。
 4. **Bug 3**：tuples0_6Ord → triplesBits2Ord（已修）。
 5. **Bug 8**：reorder tmpcnt++（已修）。
-6. **Bug 11 + 12**：清残留 + 默认构造初始化。
-7. **Bug 15**：把 `z^1` 替换为 `partner[z]`，鲁棒到所有 A_15 输入。
-8. **Bug 16 + 18**：栈/堆变量初始化与性能优化（次要）。
-9. **Bug 10 + 13**：调试输出和命名整洁。
+6. **Bug 11 + 12**：清残留 + 默认构造初始化（已修）。
+7. **Bug 10 + 13**：调试输出与命名整洁（次要）。
+
+**当前主线**：Bug 1-14 修复后仍卡在 z=12/13，需先按"待验证方向 A"加统计输出，区分稀疏性 vs 隐藏 hash 错配。**Bug 15-18 已撤回，不再纳入修复列表**。
