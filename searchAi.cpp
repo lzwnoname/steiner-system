@@ -86,7 +86,7 @@ pair<ull, ull> tuple10[16][16][105];
 
 ull tuple0_9[120];
 int element0_9[120][3];
-Pii reverse_map[4][1 << 20];
+Pii reverse_map[4][1 << 18];
 
 template<typename T>
 T lowbit(T x)
@@ -107,10 +107,9 @@ int sed_map[N_16];
 void search0_9(int t, int i, ull s){
 	if (i == 8) {
         ull high_bit = 0, low_bit = 0;
-        int id;
         if (!id_map.count(s))
             id_map[s] = cnt++;
-        id = id_map[s];
+        int id = id_map[s];
         for (int j = 0 ; j < 8 ; j++)
             if (a[j] < (t >> 1))
                 low_bit |= 1ull << a[j];
@@ -178,14 +177,14 @@ int log_2[1 << 21];
 int len;
 
 Pii& reverseMapBit2Pair(ull x) {
-    if (x < (1ll << 20ll))
+    if (x < (1ull << 16ull))
         return reverse_map[0][x];
-    else if (x < (1ll << 40ll))
-        return reverse_map[1][x >> 20ll];
-    else if (x < (1ll << 60ll))
-        return reverse_map[2][x >> 40ll];
+    else if (x < (1ull << 32ull))
+        return reverse_map[1][x >> 16ull];
+    else if (x < (1ull << 48ull))
+        return reverse_map[2][x >> 32ull];
     else
-        return reverse_map[3][x >> 60ll];
+        return reverse_map[3][x >> 48ull];
 }
 
 void output_pair(ull s, int las, tuple3 sed[])
@@ -195,7 +194,7 @@ void output_pair(ull s, int las, tuple3 sed[])
         Pii& retPair = reverseMapBit2Pair(x);
 		int tmp[3] = {sed_map[retPair.first], sed_map[retPair.second], sed_map[las]};
 		sort(tmp, tmp + 3);
-        sed[len++] = (tuple3){tmp[0], tmp[1], tmp[2]};
+        sed[len++] = tuple3{tmp[0], tmp[1], tmp[2]};
         s -= x;
     }
 }
@@ -207,16 +206,16 @@ void output_triple(ull s, int t, bool high, tuple3 sed[])
         ull x = lowbit(s);
 		if (x >= (1ull << (t >> 1ull)))
 			assert("Wrong!");
-		int id = x < (1ull << 21) ? log_2[x] : log_2[x >> 21ull] + 21;
+		int id = x < (1ull << 21ull) ? log_2[x] : log_2[x >> 21ull] + 21;
 		int tmp[3] = {sed_map[element0_9[id + offset][0]],
             sed_map[element0_9[id + offset][1]], sed_map[element0_9[id + offset][2]]};
         sort(tmp, tmp + 3);
-        sed[len++] = (tuple3){tmp[0], tmp[1], tmp[2]};
+        sed[len++] = tuple3{tmp[0], tmp[1], tmp[2]};
         s -= x;
     }
 }
 
-pair<int, int> son_blocks[7];
+Pii son_blocks[7];
 
 ull c, full_mask;
 
@@ -230,12 +229,12 @@ inline void PRE() {
 			arcMask[k][j] = arcMask[j][k] = c;
             ull idc = c;
             int idx = 0;
-            if (idc > (1ll << 60ll))
-                idc >>= 60ll, idx = 3;
-            else if (c > (1ll << 40ll))
-                idc >>= 40ll, idx = 2;
-            else if (c > (1ll << 20ll))
-                idc >>= 20ll, idx = 1;
+            if (idc >= (1ull << 48ull))
+                idc >>= 48ull, idx = 3;
+            else if (idc >= (1ull << 32ull))
+                idc >>= 32ull, idx = 2;
+            else if (idc >= (1ull << 16ull))
+                idc >>= 16ull, idx = 1;
             reverse_map[idx][idc] = mp(j, k);
             full_mask |= c;
 			c += c;
@@ -248,17 +247,16 @@ inline void PRE() {
 void PRE_SOLVE(int z) {
 	
     sed_map[14] = 15; //将扣掉的15映射成14
+    printf("对于A%d, 子结构如下：\n", z);
 	rep (i, 0, len - 1) {
-            sed_map[i << 1] = son_blocks[i].first;
-            sed_map[i << 1 | 1] = son_blocks[i].second;
-			// cout << son_blocks[i].first << ' ' << son_blocks[i].second << endl;
-        }
+        sed_map[i << 1] = son_blocks[i].first;
+        sed_map[i << 1 | 1] = son_blocks[i].second;
+        cout << son_blocks[i].first << ' ' << son_blocks[i].second << endl;
+    }
 
 	memset(matching, -1, sizeof(matching));
 	memset(matching12, -1, sizeof(matching12));
 	memset(matching13, -1, sizeof(matching13));
-	memset(Matchings12, -1, sizeof(Matchings12));
-	memset(Matchings13, -1, sizeof(Matchings13));
 	
 	n10 = n11 = 0;
 	searchTable(0, 0, 11);
@@ -301,8 +299,8 @@ void PRE_SOLVE(int z) {
 inline void Generate_seeds(ull s13, ull s12, ull s11, ull s10, pair<ull, ull> e, tuple3 sed[]) {
     len = 7; //初始化len，已经填好前7个
     rep (i, 0, len - 1)
-        sed[i] = {son_blocks[i].first, son_blocks[i].second, 15}; //前7个固定
-                               
+        sed[i] = tuple3{son_blocks[i].first, son_blocks[i].second, 15}; //前7个固定
+        
     output_pair(s13, 13, sed);
     output_pair(s12, 12, sed);
 
@@ -384,7 +382,7 @@ tuple3 extract2tuple3(int val) {
     int a = lowbit(val);
     int b = lowbit(val ^ a);
     int c = lowbit(val ^ a ^ b);
-    return (tuple3){a, b, c};
+    return tuple3{a, b, c};
 }
 
 void ConcatAi(int z) { //递归拼接Az
@@ -456,7 +454,13 @@ void ConcatAi(int z) { //递归拼接Az
 }
 
 inline void GenerateSQS16() {
-    for (int z = 13 ; z > 6 ; z--) {
+    cout << "The A14 is:" << endl;
+    for (int i = 0 ; i < Num_15 ; i++) {
+        cout << int2ch(Ai[14][i].a) << int2ch(Ai[14][i].b) << int2ch(Ai[14][i].c) << " ";
+    }
+    cout << endl;
+
+    for (int z = 13 ; z > 11 ; z--) {
         int len = 0;
         int tmpMatching[12] = {0};
         Ai[z][len++] = tuple3{z ^ 1, 14, 15};
@@ -481,14 +485,19 @@ inline void GenerateSQS16() {
             }
         }
         ull m1 = 0;
-        for (int i = 0 ; i < 12 ; i++)
-            if (tmpMatching[i] > i)
+        for (int i = 0 ; i < 12 ; i++) {
+            if (tmpMatching[i] > i) {
                 m1 = m1 * 12 + tmpMatching[i];
+            }
+            cout << i << ": " << tmpMatching[i] << endl;
+        }
         m1Values[z] = m1;
+        cout << m1 << endl;
         cout << "Already have " << len << " items." << endl;
     }
 
-    ConcatAi(13);
+    // ConcatAi(13);
+    exit(0);
 }
 
 void PreSolveForAi(int z) {
@@ -506,9 +515,6 @@ void PreSolveForAi(int z) {
 	
 	PRE_SOLVE(z);
 
-    if (z == 14) //14不需要预处理内容
-        return;
-
     static bool isEntryFirst = false;
     if (!isEntryFirst) {
         matchings0_11Cnt = 0;
@@ -518,14 +524,8 @@ void PreSolveForAi(int z) {
         cout << "0-11 matching cnt: " << matchings0_11Cnt << endl;
     }
 
-    int tmpcnt = 0;
-
-    for (int i = 0 ; i < N_16 - 2 ; i++)
-        if (i != z && i != (z ^ 1)) {
-            reorder[z][i] = tmpcnt;
-            invReorder[z][tmpcnt] = i;
-            tmpcnt++;
-        }
+    if (z == 14) //14不需要预处理内容
+        return;
 
     int AzCnt = 0; //给Az进行编号
 
@@ -558,7 +558,6 @@ void PreSolveForAi(int z) {
                                             
                                     Generate_seeds(Matchings13[i], Matchings12[j], tuple11[a][b][k].second,
                                         tuple10[c][d][l].second, e, Ai[z]);
-                                    
                                     //开始计算A14,z并将其作为关键字保存到哈希表
                                     //我们对0-11匹配进行如下Hash：仅考虑matching[i]>i，对i从小到大将matching[i]串起来
                                     AzPreEntity Az;
@@ -571,8 +570,8 @@ void PreSolveForAi(int z) {
                                             int val = Ai[z][iSed].state - (1 << 14);
                                             int firstBit = lowbit(val);
                                             int secondBit = lowbit(val - firstBit);
-                                            assert(firstBit != (z ^ 1));
-                                            assert(secondBit != (z ^ 1));
+                                            assert(log_2[firstBit] != (z ^ 1));
+                                            assert(log_2[secondBit] != (z ^ 1));
                                             tmpMatching[reorder[z][log_2[firstBit]]] = reorder[z][log_2[secondBit]];
                                         }
                                         
@@ -582,6 +581,7 @@ void PreSolveForAi(int z) {
 
                                         Az.sed[sedCnt++] = Ai[z][iSed].state; //将剩下的tuple存到哈希表里
                                     }
+                                    assert(sedCnt == 22);
                                     ull m1 = 0;
                                     for (int i = 0 ; i < 12 ; i++)
                                         if (tmpMatching[i] > i)
@@ -601,11 +601,21 @@ void PreSolveForAi(int z) {
 }
 
 void solveForAi() {
-    //先基于A15的依赖预处理好A1-A13
-    for (int z = 13 ; z >= 7 ; z--) {
-        printf("Now presolve for A%d:\n", z);
-        PreSolveForAi(z);
+    for (int z = 13 ; z > 6 ; z--) {
+        int tmpcnt = 0;
+        for (int i = 0 ; i < N_16 - 2 ; i++)
+            if (i != z && i != (z ^ 1)) {
+                reorder[z][i] = tmpcnt;
+                invReorder[z][tmpcnt] = i;
+                tmpcnt++;
+            }
     }
+
+    //先基于A15的依赖预处理好A1-A13
+    // for (int z = 13 ; z >= 7 ; z--) {
+    //     printf("Now presolve for A%d:\n", z);
+    //     PreSolveForAi(z);
+    // }
 
     //生成A14的预处理
     PreSolveForAi(14);
@@ -705,7 +715,7 @@ int main()
 {
     //以下所有steiner system以及子结构、孙子结构均要求内部按字典序排序
 	freopen("NewS(2,3,15).txt", "r", stdin);
-	freopen("out.txt", "w", stdout);
+	// freopen("out.txt", "w", stdout);
 
 	clock_t st, fi;
 	st = clock();
@@ -729,6 +739,6 @@ int main()
 	printf("The total elapsed time is %f", double(fi - st) / CLOCKS_PER_SEC);
 
     fclose(stdin);
-    fclose(stdout);
+    // fclose(stdout);
 	return 0;
 }
