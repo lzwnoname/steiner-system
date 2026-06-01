@@ -898,8 +898,70 @@ __global__ void generateSQS16(AzPreEntity *dPreSolveAz, int dn11, int dn10,
 	}
 }
 
+
+ull tuples0_6FullMask;
+
+const int TUPLES0_6LIMIT = 10;
+const int TUPLES0_6NUM = 35;
+vector<pair<ull, ull> > tuple0_6states;
+int tuples0_6[TUPLES0_6NUM][4], triples0_6[TUPLES0_6NUM][4], triplesBits2Ord[1 << 8];
+
+ull m1Values[N_16];
+
+tuple3 extract2tuple3(int val) {
+    int a = lowbit(val);
+    int b = lowbit(val ^ a);
+    int c = lowbit(val ^ a ^ b);
+    return tuple3{log_2[a], log_2[b], log_2[c]};
+}
+
 void searchSQS16() {
 
+}
+
+void search0_6Tuples(int dep, int las, ull state, ull triplesSelect) {
+    tuple0_6states.pb(mp(triplesSelect, state));
+    if (dep == 10) return;
+    for (int i = las + 1 ; i < cnt ; i++) {
+        bool flag = true;
+        int allBitsValue = (1 << tuples0_6[i][0]) + (1 << tuples0_6[i][1])
+                        + (1 << tuples0_6[i][2]) + (1 << tuples0_6[i][3]);
+        ull tmpValue = 0;
+        for (int j = 0 ; j < 4 ; j++) {
+            int triValue = allBitsValue ^ (1 << tuples0_6[i][j]);
+            tmpValue |= 1ull << (ull)triplesBits2Ord[triValue];
+        }
+        if (triplesSelect & tmpValue) continue;
+        search0_6Tuples(dep + 1, i, state | (1ull << (ull)i), triplesSelect | tmpValue);
+    }
+}
+
+void generate0_6Tuples() {
+    cnt = 0;
+    for (int i = 0 ; i < 7 ; i++)
+        for (int j = i + 1 ; j < 7 ; j++)
+            for (int k = j + 1 ; k < 7 ; k++) {
+                triples0_6[cnt][0] = i;
+                triples0_6[cnt][1] = j;
+                triples0_6[cnt][2] = k;
+                triplesBits2Ord[(1 << i) + (1 << j) + (1 << k)] = cnt;
+                tuples0_6FullMask |= 1ull << (ull)cnt;
+                cnt++;
+            }
+
+    cnt = 0;
+    for (int i = 0 ; i < 7 ; i++)
+        for (int j = i + 1 ; j < 7 ; j++)
+            for (int k = j + 1 ; k < 7 ; k++)
+                for (int l = k + 1 ; l < 7 ; l++) {
+                    tuples0_6[cnt][0] = i;
+                    tuples0_6[cnt][1] = j;
+                    tuples0_6[cnt][2] = k;
+                    tuples0_6[cnt++][3] = l;
+                }
+    search0_6Tuples(0, -1, 0, 0);
+    sort(tuple0_6states.begin(), tuple0_6states.end());
+    cout << "可能的0-6组成的四元组集合的数量是: " << tuple0_6states.size() << endl;
 }
 
 int main()

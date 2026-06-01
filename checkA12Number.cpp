@@ -75,6 +75,8 @@ int matching[N_16];
 ull arcMask[N_16][N_16]; 
 int n10, n11;
 
+int mask15[1 << N_16];
+
 int m;
 ull Matchings12[maxn], Matchings13[maxn];
 int matching13[maxn][2]; 
@@ -102,7 +104,6 @@ int cnt;
 int a[9];
 
 int mask[1 << N_16 + 1];
-bool maskAi[N_16][1 << N_16 + 1];
 int sed_map[N_16];
 
 void search0_9(int t, int i, ull s){
@@ -145,7 +146,7 @@ void searchTable(int i, ull s, int g){
 	do {j++;} while (j < 12 && matching[j] != -1);
 	for (int k = j + 1; k < 12; k++){
 		if (k == j + 1 && ((j & 1) == 0)) continue;
-		if (matching[k] == -1 && !mask[(1 << sed_map[k]) + (1 << sed_map[j]) + v]) {
+		if (matching[k] == -1 && !mask15[(1 << sed_map[k]) + (1 << sed_map[j]) + v]) {
 			matching[j] = k;
 			matching[k] = j;
 			searchTable(i + 1, s + arcMask[j][k], g);
@@ -164,7 +165,7 @@ void search4rows(int x, int i, ull s_all, ull s, pair<ull, ull> tup[105]) {
 	used[j] = true;
 	for (int k = j + 1; k < 10; k++)
 		if (!used[k] && !(k == j + 1 && (j & 1) == 0)
-            && !mask[(1 << sed_map[k]) + (1 << sed_map[j]) + (1 << sed_map[x])]){
+            && !mask15[(1 << sed_map[k]) + (1 << sed_map[j]) + (1 << sed_map[x])]){
 			used[k] = true;
 			search4rows(x, i + 1,
                 s_all + arcMask[j][k] + arcMask[j][x] + arcMask[k][x],
@@ -246,9 +247,8 @@ inline void PRE() {
 }
 
 void PRE_SOLVE(int z) {
-	
     sed_map[14] = 15; //将扣掉的15映射成14
-    printf("对于A%d, 子结构如下：\n", z);
+    printf("对于A%d, 子结构如下, 长度为%d：\n", z, len);
 	rep (i, 0, len - 1) {
         sed_map[i << 1] = son_blocks[i].first;
         sed_map[i << 1 | 1] = son_blocks[i].second;
@@ -279,7 +279,7 @@ void PRE_SOLVE(int z) {
 		for (int j = i + 1; j < 9; j++)
 			for (int k = j + 1; k < 10; k++)
 				if (arcMask[i][j] > 0 && arcMask[i][k] > 0 && arcMask[j][k] > 0
-                    && !mask[(1 << sed_map[i]) + (1 << sed_map[j]) + (1 << sed_map[k])])
+                    && !mask15[(1 << sed_map[i]) + (1 << sed_map[j]) + (1 << sed_map[k])])
                 {
 					tuple0_9[t] = arcMask[i][j] + arcMask[i][k] + arcMask[j][k];
                     element0_9[t][0] = i; element0_9[t][1] = j; element0_9[t][2] = k;
@@ -353,18 +353,30 @@ struct AzPreEntity {
 vector<AzPreEntity> preSolveAz[N_16][MatchingNums_0_11];
 int reorder[N_16][N_16], invReorder[N_16][N_16];
 
+inline bool check2(int z) {
+    int highBitsMask = ((1 << N_16) - 1) ^ ((1 << z + 1) - 1);
+    for (int i = 0 ; i < Num_15 ; i++) {
+        int highVal = Ai[z][i].state & highBitsMask;
+        if (highVal) {
+            int tmp = lowbit(highVal);
+            if (!mask[Ai[z][i].state ^ tmp ^ (1 << z)]) {
+                return false;
+            }
+        } else if (mask[Ai[z][i].state]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 inline bool check(AzPreEntity& item, int size, int z) {
     int highBitsMask = ((1 << N_16) - 1) ^ ((1 << z + 1) - 1);
     for (int i = 0 ; i < size ; i++) {
         int highVal = item.sed[i] & highBitsMask;
         if (highVal) {
-            int s = item.sed[i];
-            while (highVal) {
-                int r = lowbit(highVal);
-                if (!maskAi[log_2[r]][item.sed[i] ^ r ^ (1 << z)]) {
-                    return false;
-                }
-                highVal ^= r;
+            int tmp = lowbit(highVal);
+            if (!mask[item.sed[i] ^ tmp ^ (1 << z)]) {
+                return false;
             }
         } else if (mask[item.sed[i]]) {
             return false;
@@ -373,7 +385,7 @@ inline bool check(AzPreEntity& item, int size, int z) {
     return true;
 }
 
-ull tuples0_6FullMask;
+int tuples0_6FullMask;
 
 const int TUPLES0_6LIMIT = 10;
 const int TUPLES0_6NUM = 35;
@@ -391,98 +403,78 @@ tuple3 extract2tuple3(int val) {
     return tuple3{log_2[a], log_2[b], log_2[c]};
 }
 
-void ConcatAi(int z) { //递归拼接Az
-    if (z == 6) {//递归到边界：0 直接返回， x 做折半拼接，此时还剩下6个block需要拼接
-        bool tmpMask[1 << N_16] = {0};
-        int cnt = 0;
-        ull tuples0_6Mask = 0; //计算目前0_6的三元组一共占位了多少
-        ull ans_state[Num_16];
-        for (int i = 15 ; i > z ; i--) {
-            for (int j = 0 ; j < Num_15 ; j++) {
-                assert(__builtin_popcount(Ai[i][j].state) == 3);
-                assert((Ai[i][j].state & (1 << i)) == 0);
+void PreSolveForAi(int z);
 
-                if (Ai[i][j].state <= (1 << 6) + (1 << 5) + (1 << 4))
-                    tuples0_6Mask |= 1ull << (ull)triplesBits2Ord[Ai[i][j].state];
-                ull tmp_all = (ull)Ai[i][j].state | (1ull << (ull)i);
-                assert(__builtin_popcount(tmp_all) == 4);
-                if(tmpMask[tmp_all])
-                    continue;
-                ans_state[cnt] = tmp_all;
-                cnt++;
-                tmpMask[tmp_all] = true;
-            }
-        }
-        //对剩下仅含0-6的block进行拼接, 二分搜索这一半
-        tuples0_6Mask ^= tuples0_6FullMask;
-        cout << "The tuples0_6Mask is " << tuples0_6Mask << endl;
-        int l = 0, r = tuple0_6states.size() - 1, ans = 0;
-        while (l <= r) {
-            int mid = (l + r) >> 1;
-            if (tuple0_6states[mid].first >= tuples0_6Mask) {
-                r = mid - 1;
-                ans = mid;
-            } else l = mid + 1;
-        }
-        cout << "The block have " << cnt << " with ans = " << ans << endl;
-        while (ans < tuple0_6states.size() && tuple0_6states[ans].first == tuples0_6Mask) {
-            DEBUGVARIABLE++;
-            if (DEBUGVARIABLE == 20)
-                exit(0);
-            printf("The %dth SQS(16):\n", DEBUGVARIABLE);
-            for (int i = 0 ; i < cnt ; i++) {
-                ull v = ans_state[i];
-                while (v) {
-                    ull low_v = lowbit(v);
-                    cout << int2ch(log_2[low_v]) << " ";
-                    v ^= low_v;
+void ConcatAi(int z) { //递归拼接Az
+    if (z == 12) {
+        PreSolveForAi(12);
+        int AzCnt = 0;
+        for (int i = 0; i < n11; i++) {
+            for (int j = 0; j < n10; j++) {
+                if ((Matchings13[i] & Matchings12[j]) == 0) {
+                    ull s = Matchings13[i] | Matchings12[j];
+                    int a = matching13[i][0];
+                    int b = matching12[j][0];
+                    if (a > b) swap(a, b);
+                    int c = matching13[i][1];
+                    int d = matching12[j][1];
+                    if (c > d) swap(c, d);
+                    for (int k = 0; k < 60 ; k++)
+                        if (tuple11[a][b][k].first != 0 && (s & tuple11[a][b][k].first) == 0){
+                            s |= tuple11[a][b][k].first;
+                            for (int l = 0; l < 60 ; l++)
+                                if (tuple10[c][d][l].first != 0 && (s & tuple10[c][d][l].first) == 0){
+                                    s |= tuple10[c][d][l].first;
+                                    if ((s & full_mask) != s)
+                                        assert("Wrong1!");
+
+                                    ull query_s = full_mask ^ s;
+                                    if (!id_map.count(query_s)) {
+                                        s -= tuple10[c][d][l].first;
+                                        continue;
+                                    }
+
+                                    for (auto e : sol0_9[id_map[query_s]]) {
+                                                
+                                        Generate_seeds(Matchings13[i], Matchings12[j], tuple11[a][b][k].second,
+                                            tuple10[c][d][l].second, e, Ai[z]);
+                                        if (check2(z))
+                                            AzCnt++;
+                                    }
+                                    s -= tuple10[c][d][l].first;
+                                }
+                            s -= tuple11[a][b][k].first;
+                        }
                 }
-                cout << endl;
             }
-            ull v = tuple0_6states[ans].second;
-            assert(__builtin_popcount(v) == 140 - cnt);
-            while (v) {
-                ull low_v = lowbit(v);
-                int idx = (low_v >= (1ull << 18ull)) ? log_2[low_v >> 18ull] + 18 : log_2[low_v];
-                for (int j = 0 ; j < 4 ; j++)
-                    cout << tuples0_6[idx][j] << " ";
-                cout << endl;
-                v ^= low_v;
-            }
-            ans++;
         }
+        cout << "合法A12一共" << AzCnt << endl;
+        if (AzCnt > 0)
+            exit(0);
         return;
     }
     
     int len = 13;
-    //处理目前已经有的Az部分的mask
-    for (int i = 0 ; i < len ; i++) {
+    for (int i = 0 ; i < len ; i++) //处理目前已经有的Az部分的mask
         mask[Ai[z][i].state]++;
-        maskAi[z][Ai[z][i].state] = true;
-    }
 
     int matching0_11Ord = ordMatchings0_11[m1Values[z]];
-    for (auto& item : preSolveAz[z][matching0_11Ord]) { //开始拼接剩余部分, 处理mask
+    assert(matching0_11Ord != -1);
+    for (auto item : preSolveAz[z][matching0_11Ord]) { //开始拼接剩余部分, 处理mask
         //检查是否与之前拼接的发生了三元组重复
         if (!check(item, Num_15 - len, z))
             continue;
         for (int i = len ; i < Num_15 ; i++) {
             Ai[z][i] = extract2tuple3(item.sed[i - len]);
             mask[Ai[z][i].state]++;
-            maskAi[z][Ai[z][i].state] = true;
         }
         ConcatAi(z - 1);
-        for (int i = len ; i < Num_15 ; i++) {
+        for (int i = len ; i < Num_15 ; i++)
             mask[Ai[z][i].state]--;
-            maskAi[z][Ai[z][i].state] = false;
-        }
     }
 
-    //撤销目前已经有的Az部分的mask
-    for (int i = 0 ; i < len ; i++) {
+    for (int i = 0 ; i < len ; i++) //撤销目前已经有的Az部分的mask
         mask[Ai[z][i].state]--;
-        maskAi[z][Ai[z][i].state] = false;
-    }
 }
 
 inline void GenerateSQS16() {
@@ -492,7 +484,7 @@ inline void GenerateSQS16() {
     }
     cout << endl;
 
-    for (int z = 13 ; z >= 7 ; z--) {
+    for (int z = 13 ; z > 12 ; z--) {
         int len = 0;
         int tmpMatching[12] = {0};
         Ai[z][len++] = tuple3{z ^ 1, 14, 15};
@@ -502,7 +494,7 @@ inline void GenerateSQS16() {
                 int tmp = lowbit(val);
                 val -= tmp;
                 Ai[z][len++] = tuple3{log_2[tmp], log_2[lowbit(val)], 15};
-                // cout << "For" << z << ": " << Ai[z][len - 1].a << ' ' << Ai[z][len - 1].b << ' ' << Ai[z][len - 1].c << endl;
+                cout << "For" << z << ": " << Ai[z][len - 1].a << ' ' << Ai[z][len - 1].b << ' ' << Ai[z][len - 1].c << endl;
             }
 
             if ((Ai[14][i].state & (1 << z)) && !(Ai[14][i].state & (1 << 15))) {
@@ -513,7 +505,7 @@ inline void GenerateSQS16() {
                 assert(Ai[z][len - 1].a != (z ^ 1));
                 assert(Ai[z][len - 1].b != (z ^ 1));
                 tmpMatching[reorder[z][Ai[z][len - 1].a]] = reorder[z][Ai[z][len - 1].b]; //这一部分只依赖于参数z，因此可以预处理，就不需要整个放入显卡
-                // cout << "For" << z << ": " << Ai[z][len - 1].a << ' ' << Ai[z][len - 1].b << ' ' << Ai[z][len - 1].c << endl;
+                cout << "For" << z << ": " << Ai[z][len - 1].a << ' ' << Ai[z][len - 1].b << ' ' << Ai[z][len - 1].c << endl;
             }
         }
         ull m1 = 0;
@@ -521,12 +513,11 @@ inline void GenerateSQS16() {
             if (tmpMatching[i] > i) {
                 m1 = m1 * 12 + tmpMatching[i];
             }
-            // cout << i << ": " << tmpMatching[i] << endl;
+            cout << i << ": " << tmpMatching[i] << endl;
         }
         m1Values[z] = m1;
         cout << m1 << endl;
-        assert(ordMatchings0_11[m1] != -1);
-        cout << z << " already have " << len << " items." << ", with m1_ord=" << ordMatchings0_11[m1]
+        cout << "Already have " << len << " items." << ", with m1_ord=" << ordMatchings0_11[m1]
         << ", with entity number=" << preSolveAz[z][ordMatchings0_11[m1]].size() << endl;
     }
 
@@ -538,7 +529,6 @@ void PreSolveForAi(int z) {
     static bool isEntryFirst = false;
     if (!isEntryFirst) {
         PRE();
-
         matchings0_11Cnt = 0;
         memset(matching, -1, sizeof(matching));
         memset(ordMatchings0_11, -1, sizeof(ordMatchings0_11));
@@ -546,7 +536,7 @@ void PreSolveForAi(int z) {
         isEntryFirst = true;
         cout << "0-11 matching cnt: " << matchings0_11Cnt << endl;
     }
-    
+
     len = 0;
     rep (i, 0, Num_15 - 1)
         if (Ai[15][i].state & (1 << z)) {
@@ -556,10 +546,11 @@ void PreSolveForAi(int z) {
             val -= fir;
             son_blocks[len++].second = log_2[lowbit(val)];
         }
+    cout << "len: " << len << endl;
 	
 	PRE_SOLVE(z);
 
-    if (z == 14) //14不需要预处理内容
+    if (z == 14 || z == 12) //14不需要预处理内容
         return;
 
     int AzCnt = 0; //给Az进行编号
@@ -636,7 +627,7 @@ void PreSolveForAi(int z) {
 }
 
 void solveForAi() {
-    for (int z = 13 ; z > 6 ; z--) {
+    for (int z = 13 ; z > 12 ; z--) {
         int tmpcnt = 0;
         for (int i = 0 ; i < N_16 - 2 ; i++)
             if (i != z && i != (z ^ 1)) {
@@ -648,7 +639,7 @@ void solveForAi() {
 
     // 先基于A15的依赖预处理好A7-A13
     // DEBUG z >= 11
-    for (int z = 13 ; z >= 7 ; z--) {
+    for (int z = 13 ; z >= 13 ; z--) {
         printf("Now presolve for A%d:\n", z);
         PreSolveForAi(z);
     }
@@ -685,18 +676,14 @@ void solveForAi() {
                                     Generate_seeds(Matchings13[i], Matchings12[j], tuple11[a][b][k].second,
                                         tuple10[c][d][l].second, e, Ai[14]);
                                     //此时固定Ai[15]和Ai[14]开始递归拼接Az，注意首先处理mask
-                                    for (int i = 0 ; i < Num_15 ; i++) {
+                                    for (int i = 0 ; i < Num_15 ; i++)
                                         mask[Ai[14][i].state]++;
-                                        maskAi[14][Ai[14][i].state] = true;
-                                    }
                                     // cout << "Printing 14:" << endl;
                                     // for (int i = 0 ; i < Num_15 ; i++)
                                     //     cout << Ai[14][i].a << ' ' << Ai[14][i].b << ' ' << Ai[14][i].c << endl;
                                     GenerateSQS16();
-                                    for (int i = 0 ; i < Num_15 ; i++) {
+                                    for (int i = 0 ; i < Num_15 ; i++)
                                         mask[Ai[14][i].state]--;
-                                        maskAi[14][Ai[14][i].state] = false;
-                                    }
                                 }
                                 s -= tuple10[c][d][l].first;
                             }
@@ -708,16 +695,17 @@ void solveForAi() {
 }
 
 void search0_6Tuples(int dep, int las, ull state, ull triplesSelect) {
-    tuple0_6states.pb(mp(triplesSelect, state));
+    if (state != 0)
+        tuple0_6states.pb(mp(triplesSelect, state));
     if (dep == 10) return;
     for (int i = las + 1 ; i < cnt ; i++) {
         bool flag = true;
         int allBitsValue = (1 << tuples0_6[i][0]) + (1 << tuples0_6[i][1])
                         + (1 << tuples0_6[i][2]) + (1 << tuples0_6[i][3]);
-        ull tmpValue = 0;
+        int tmpValue = 0;
         for (int j = 0 ; j < 4 ; j++) {
             int triValue = allBitsValue ^ (1 << tuples0_6[i][j]);
-            tmpValue |= 1ull << (ull)triplesBits2Ord[triValue];
+            tmpValue |= 1 << triplesBits2Ord[triValue];
         }
         if (triplesSelect & tmpValue) continue;
         search0_6Tuples(dep + 1, i, state | (1ull << (ull)i), triplesSelect | tmpValue);
@@ -736,7 +724,6 @@ void generate0_6Tuples() {
                 tuples0_6FullMask |= 1ull << (ull)cnt;
                 cnt++;
             }
-
     cnt = 0;
     for (int i = 0 ; i < 7 ; i++)
         for (int j = i + 1 ; j < 7 ; j++)
@@ -749,7 +736,6 @@ void generate0_6Tuples() {
                 }
     search0_6Tuples(0, -1, 0, 0);
     sort(tuple0_6states.begin(), tuple0_6states.end());
-    cout << "可能的0-6组成的四元组集合的数量是: " << tuple0_6states.size() << endl;
 }
 
 int main()
@@ -761,12 +747,16 @@ int main()
 	clock_t st, fi;
 	st = clock();
 
-    for (int t = 0 ; t < 1 ; t++) {
+    int expectedT = 1;
+
+    for (int t = 0 ; t < expectedT ; t++) {
 		for (int i = 0 ; i < Num_15 ; i++) {
 			Ai[15][i] = tuple3{getch(), getch(), getch()};
             int v = (1 << Ai[15][i].a) | (1 << Ai[15][i].b) | (1 << Ai[15][i].c);
-            mask[v]++;
-            maskAi[15][v] = true;
+            if (t == expectedT - 1) {
+                mask[v]++;
+                mask15[v]++;
+            }
 		}
 	}
     cin.clear();
