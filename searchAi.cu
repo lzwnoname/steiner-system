@@ -501,6 +501,13 @@ __managed__ int d_t0_6sz_saved;
 // ======== 结果计数器：每卡独立 ========
 unsigned long long *d_resultCnt[GPUNUMS];
 
+// ======== SQS(16) 输出缓冲区（managed，仅捕获第一个解） ========
+__managed__ int d_output_cnt;                          // 已捕获计数
+__managed__ ull d_output_ans_state[140];               // 高位 4-block（ans_state 内容）
+__managed__ int d_output_blkCnt;                       // 高位 block 数量
+__managed__ ull d_output_low_state;                    // 0-6 补全四元组选择器
+
+
 // ============================================================
 // Device: extract2tuple3 / check_linear / ConcatAiIter
 // ============================================================
@@ -594,9 +601,9 @@ __device__ inline bool check_linear(const int *__restrict__ pAiState,
 	return true;
 }
 
-// Forward declarations for managed symbols used in ConcatAiIter
-__device__ __managed__ extern int d_triplesBits2Ord_dev[1 << 8];
-__device__ __managed__ extern ull d_tuples0_6FullMask_dev;
+// 0-6 边界数据：managed 多卡共享（实际定义，不是 forward declaration）
+__device__ __managed__ int d_triplesBits2Ord_dev[1 << 8];
+__device__ __managed__ ull d_tuples0_6FullMask_dev;
 
 // ============================================================
 // ConcatAiIter：栈式迭代搜索（用 Ai_state 线性扫描，对齐 CPU 版 ConcatAi）
@@ -717,11 +724,22 @@ __device__ void ConcatAiIter(
 				}
 			}
 
-			while (ansPos < d_t0_6sz_saved && d_tuple0_6states_managed[ansPos].first == tuples0_6Mask)
+		while (ansPos < d_t0_6sz_saved && d_tuple0_6states_managed[ansPos].first == tuples0_6Mask)
+		{
+			atomicAdd(d_resultCnt, 1ULL);
+
+			// 捕获第一个 SQS(16) 用于输出验证
+			int old = atomicAdd(&d_output_cnt, 1);
+			if (old == 0)
 			{
-				atomicAdd(d_resultCnt, 1ULL);
-				ansPos++;
+				for (int kk = 0; kk < blkCnt; kk++)
+					d_output_ans_state[kk] = ans_state[kk];
+				d_output_blkCnt = blkCnt;
+				d_output_low_state = d_tuple0_6states_managed[ansPos].second;
 			}
+
+			ansPos++;
+		}
 
 			// 撤销后缀，留在当前层
 			pSuffixCnt[z] = LEN;
@@ -938,6 +956,9 @@ __global__ void SearchSQS16Kernel(
 							}
 
 							// triples from A14 with zz, without 15 → m1
+							// 对齐 CPU 版 searchAi.cpp:601: tmpMatching[reorder[z][a]] = reorder[z][b]
+							// 这里直接按"对小到大顺序遍历 ii，每个三元组的较大元素累加 reorder"
+							// 等价于 CPU 版的 for(i=0..11) if(tmpMatching[i]>i) m1=m1*12+tmpMatching[i]
 							ull m1 = 0;
 							rep(ii, 0, Num_15 - 1)
 							{
@@ -948,7 +969,7 @@ __global__ void SearchSQS16Kernel(
 									int bit1 = dlowbit(val);
 									int bit2 = dlowbit(val ^ bit1);
 									layerZ[fillPos++] = bit1 + bit2 + (1 << 14);
-									m1 = m1 * 12 + dreorderAll[zz][bit2];
+									m1 = m1 * 12 + dreorderAll[zz][d_log_2[bit2]];
 								}
 							}
 							m1Values[zz] = m1;
@@ -1152,9 +1173,11 @@ unsigned long long RunSearch()
 
 		auto st = chrono::steady_clock::now();
 
-		int chunk_size = (n11 * n10 + GPUNUMS - 1) / GPUNUMS;
+		int total_pos = n11 * n10;
+		int chunk_size = (total_pos + GPUNUMS - 1) / GPUNUMS;
 		int offset_x = chunk_size * dev_id;
-		int end_x = min((int)(offset_x + chunk_size), n11 * n10) - 1;
+		int end_x = min((int)(offset_x + chunk_size), total_pos) - 1;
+		printf("GPU%d: search range [%d, %d] / %d\n", dev_id, offset_x, end_x, total_pos);
 
 		if (offset_x > end_x)
 		{
@@ -1353,15 +1376,59 @@ void searchSQS16()
 	for (int dev = 0; dev < GPUNUMS; dev++)
 		cudaMemAdvise(d_tuple0_6states_managed, sizeof(pair<ull, ull>) * tuple0_6states.size(), cudaMemAdviseSetReadMostly, dev);
 
-	// triplesBits2Ord + FullMask → managed symbols
-	cudaMemcpyToSymbol(d_triplesBits2Ord_dev, triplesBits2Ord, sizeof(int) * (1 << 8));
-	cudaMemcpyToSymbol(d_tuples0_6FullMask_dev, &tuples0_6FullMask, sizeof(ull));
+	// triplesBits2Ord + FullMask → managed 变量直接赋值
+	memcpy(d_triplesBits2Ord_dev, triplesBits2Ord, sizeof(int) * (1 << 8));
+	d_tuples0_6FullMask_dev = tuples0_6FullMask;
 
-	printf("Starting GPU search on 4 GPUs...\n");
+	// 清零 SQS(16) 输出计数器
+	d_output_cnt = 0;
+
+	printf("Starting GPU search on %d GPU(s)...\n", GPUNUMS);
 	unsigned long long total = RunSearch();
 	printf("\n========================================\n");
 	printf("Total SQS(16) found: %llu\n", total);
 	printf("========================================\n");
+
+	// 输出捕获的第一个 SQS(16) 到文件
+	if (d_output_cnt > 0)
+	{
+		FILE *fout = fopen("sqs_output.txt", "w");
+		if (fout)
+		{
+			fprintf(fout, "First SQS(16) captured (%d high blocks + 0-6 complement):\n", d_output_blkCnt);
+			// 输出高位 4-block（来自 ans_state）
+			for (int i = 0; i < d_output_blkCnt; i++)
+			{
+				ull v = d_output_ans_state[i];
+				while (v)
+				{
+					ull lv = v & -v; // lowbit
+					int elem = log_2[lv < (1ull << 21) ? lv : lv >> 21] + (lv < (1ull << 21) ? 0 : 21);
+					fprintf(fout, "%c", int2ch(elem));
+					v ^= lv;
+				}
+				fprintf(fout, "\n");
+			}
+			// 输出 0-6 四元组（从 tuples0_6 解码）
+			ull ls = d_output_low_state;
+			while (ls)
+			{
+				ull lv = ls & -ls;
+				int idx = (lv < (1ull << 21)) ? log_2[lv] : log_2[lv >> 21] + 21;
+				for (int j = 0; j < 4; j++)
+					fprintf(fout, "%c", int2ch(tuples0_6[idx][j]));
+				fprintf(fout, "\n");
+				ls ^= lv;
+			}
+			fclose(fout);
+			printf("First SQS(16) written to sqs_output.txt (%d blocks total)\n",
+				   d_output_blkCnt + __builtin_popcountll(d_output_low_state));
+		}
+	}
+	else
+	{
+		printf("No SQS(16) captured in this search range.\n");
+	}
 }
 
 // ============================================================
@@ -1420,6 +1487,7 @@ void generate0_6Tuples()
 
 int main()
 {
+	setbuf(stdout, NULL);  // 禁用输出缓冲，便于实时查看进度
 	freopen("NewS(2,3,15).txt", "r", stdin);
 	// freopen("out.txt", "w", stdout);
 

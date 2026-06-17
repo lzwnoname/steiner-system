@@ -1,0 +1,6 @@
+可能的0-6组成的四元组集合的数量是: 5596
+Now presolve for A13:
+0-11 matching cnt: 10395
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
