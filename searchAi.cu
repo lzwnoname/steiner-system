@@ -22,6 +22,7 @@
 #define mp make_pair
 #define all(x) x.begin(), x.end()
 #define GPUNUMS 1
+#define TEST_POS_LIMIT 5000  // 调试用：限制搜索范围，定为0则全量
 
 using namespace std;
 typedef long long ll;
@@ -502,10 +503,18 @@ __managed__ int d_t0_6sz_saved;
 unsigned long long *d_resultCnt[GPUNUMS];
 
 // ======== SQS(16) 输出缓冲区（managed，仅捕获第一个解） ========
-__managed__ int d_output_cnt;                          // 已捕获计数
-__managed__ ull d_output_ans_state[140];               // 高位 4-block（ans_state 内容）
-__managed__ int d_output_blkCnt;                       // 高位 block 数量
-__managed__ ull d_output_low_state;                    // 0-6 补全四元组选择器
+__managed__ int d_output_cnt;
+__managed__ ull d_output_ans_state[140];
+__managed__ int d_output_blkCnt;
+__managed__ ull d_output_low_state;
+
+// ======== 调试计数器（managed，定位卡死和数据流） ========
+__managed__ unsigned long long d_dbg_pos_done;     // 已处理 pos 数
+__managed__ unsigned long long d_dbg_filter_pass;  // 通过 disjunction 的 pos
+__managed__ unsigned long long d_dbg_a14_hits;     // 命中的 A14 候选
+__managed__ unsigned long long d_dbg_concat_calls; // ConcatAiIter 调用次数
+__managed__ unsigned long long d_dbg_concat_iters; // ConcatAiIter while 迭代数
+__managed__ int d_dbg_stuck_pos;                   // 看门狗触发时的 pos
 
 
 // ============================================================
@@ -628,6 +637,10 @@ __device__ void ConcatAiIter(
 	int d = 0;
 	int z = start_z;
 
+	// 看门狗：限制单次不超过 10M 迭代
+	int local_iters = 0;
+	const int WDOG_LIMIT = 10000000;
+
 	for (int i = 0; i < 7; i++)
 		pIdx[i] = -1;
 	pIdx[0] = 0;
@@ -646,6 +659,7 @@ __device__ void ConcatAiIter(
 
 	while (d >= 0)
 	{
+		if (++local_iters > WDOG_LIMIT) { d_dbg_stuck_pos = -2; break; }
 		z = start_z - d;
 
 		// ---- idx 耗尽：回溯 ----
@@ -754,6 +768,7 @@ __device__ void ConcatAiIter(
 			pIdx[d] = 0;
 		}
 	}
+	atomicAdd(&d_dbg_concat_iters, (unsigned long long)local_iters);
 }
 
 // ============================================================
@@ -892,6 +907,7 @@ __global__ void SearchSQS16Kernel(
 		int i = pos / n10, j = pos % n10;
 		if ((dMatchings13[i] & dMatchings12[j]) == 0)
 		{
+			atomicAdd(&d_dbg_filter_pass, 1ULL);
 			int a = dmatching13[i][0];
 			int b = dmatching12[j][0];
 			if (a > b)
@@ -923,6 +939,8 @@ __global__ void SearchSQS16Kernel(
 					
 					while (ans < d_solLength && d_sol0_9[ans].s == query_s)
 					{
+						atomicAdd(&d_dbg_a14_hits, 1ULL);
+
 						// ==== Rebuild Ai[14] ====
 						Generate_seeds(dsedOf13[i], dsedOf12[j],
 									   dsedOf11[a][b][k], dsedOf10[c][d][m],
@@ -977,6 +995,7 @@ __global__ void SearchSQS16Kernel(
 						}
 
 						// ==== Run search ====
+						atomicAdd(&d_dbg_concat_calls, 1ULL);
 						ConcatAiIter(azFlat_dev, azBucketStart_dev, azBucketSize_dev,
 										  m1Values,
 										  pAiState, pSuffixCnt, pIdx,
@@ -989,6 +1008,7 @@ __global__ void SearchSQS16Kernel(
 				s ^= dtuple11[a][b][k].first;
 			}
 		}
+		atomicAdd(&d_dbg_pos_done, 1ULL);
 	}
 }
 
@@ -1176,8 +1196,11 @@ unsigned long long RunSearch()
 		int total_pos = n11 * n10;
 		int chunk_size = (total_pos + GPUNUMS - 1) / GPUNUMS;
 		int offset_x = chunk_size * dev_id;
-		int end_x = min((int)(offset_x + chunk_size), total_pos) - 1;
-		printf("GPU%d: search range [%d, %d] / %d\n", dev_id, offset_x, end_x, total_pos);
+	int end_x = min((int)(offset_x + chunk_size), total_pos) - 1;
+#if TEST_POS_LIMIT > 0
+	if (end_x > offset_x + TEST_POS_LIMIT - 1) end_x = offset_x + TEST_POS_LIMIT - 1;
+#endif
+	printf("GPU%d: search range [%d, %d] / %d\n", dev_id, offset_x, end_x, total_pos);
 
 		if (offset_x > end_x)
 		{
@@ -1225,6 +1248,14 @@ unsigned long long RunSearch()
 			cudaMemcpy(d_azBucketStart, h_azBucketStart, sizeof(int *) * 16, cudaMemcpyHostToDevice);
 			cudaMemcpy(d_azBucketSize, h_azBucketSize, sizeof(int *) * 16, cudaMemcpyHostToDevice);
 
+			// 清零调试计数器
+			d_dbg_pos_done = 0;
+			d_dbg_filter_pass = 0;
+			d_dbg_a14_hits = 0;
+			d_dbg_concat_calls = 0;
+			d_dbg_concat_iters = 0;
+			d_dbg_stuck_pos = -1;
+
 			SearchSQS16Kernel<<<GRID_SIZE, BLOCK_SIZE>>>(
 				d_azFlat, d_azBucketStart, d_azBucketSize,
 				d_threadPool,
@@ -1236,6 +1267,11 @@ unsigned long long RunSearch()
 			if (cudaerr_run != cudaSuccess)
 				printf("Search kernel GPU%d failed: \"%s\".\n", dev_id, cudaGetErrorString(cudaerr_run));
 			cudaDeviceSynchronize();
+
+			// 读取并打印调试计数器（managed 变量 host 端直接读）
+			printf("GPU%d debug: pos=%llu  filter=%llu  a14=%llu  concat=%llu  iters=%llu  stuck=%d\n",
+				   dev_id, d_dbg_pos_done, d_dbg_filter_pass, d_dbg_a14_hits,
+				   d_dbg_concat_calls, d_dbg_concat_iters, d_dbg_stuck_pos);
 
 			cudaMemcpy(&hostCnt[dev_id], d_resultCnt[dev_id], sizeof(unsigned long long), cudaMemcpyDeviceToHost);
 

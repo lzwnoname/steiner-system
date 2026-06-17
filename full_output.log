@@ -4,3 +4,56 @@ Now presolve for A13:
 n11 = 3329, n10 = 3329
 The value of t is 72
 The number of different legal s in [0-9] is 5859088
+CUDA Error1: "no error".
+[GPU0] A13 pre-solved: 88245 entities
+A13 CSR: total=88245, max_bucket=4999
+Now presolve for A12:
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+CUDA Error1: "no error".
+[GPU0] A12 pre-solved: 89771 entities
+A12 CSR: total=89771, max_bucket=4980
+Now presolve for A11:
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+CUDA Error1: "no error".
+[GPU0] A11 pre-solved: 86308 entities
+A11 CSR: total=86308, max_bucket=4761
+Now presolve for A10:
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+CUDA Error1: "no error".
+[GPU0] A10 pre-solved: 86444 entities
+A10 CSR: total=86444, max_bucket=4405
+Now presolve for A9:
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+CUDA Error1: "no error".
+[GPU0] A9 pre-solved: 90284 entities
+A9 CSR: total=90284, max_bucket=5191
+Now presolve for A8:
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+CUDA Error1: "no error".
+[GPU0] A8 pre-solved: 87375 entities
+A8 CSR: total=87375, max_bucket=5276
+Now presolve for A7:
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+CUDA Error1: "no error".
+[GPU0] A7 pre-solved: 86200 entities
+A7 CSR: total=86200, max_bucket=4845
+n11 = 3329, n10 = 3329
+The value of t is 72
+The number of different legal s in [0-9] is 5859088
+CUDA Error1: "no error".
+Starting GPU search on 1 GPU(s)...
+CUDA Search GPU0: "no error".
+GPU0: search range [0, 11082240] / 11082241
+DONE:143
