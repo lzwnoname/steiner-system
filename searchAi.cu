@@ -21,7 +21,7 @@
 #define pb push_back
 #define mp make_pair
 #define all(x) x.begin(), x.end()
-#define GPUNUMS 4
+#define GPUNUMS 1
 
 using namespace std;
 typedef long long ll;
@@ -491,12 +491,12 @@ int *dAzBucketStart_managed[16];						// managed
 int *dAzBucketSize_managed[16];							// managed
 
 // ======== sol0_9：managed 多卡共享 ========
-Sol *d_sol0_9_managed;
-int d_sol0_9_size_saved;
+__managed__ Sol *d_sol0_9_managed;
+__managed__ int d_sol0_9_size_saved;
 
 // ======== tuple0_6states：managed 多卡共享 ========
-pair<ull, ull> *d_tuple0_6states_managed;
-int d_t0_6sz_saved;
+__managed__ pair<ull, ull> *d_tuple0_6states_managed;
+__managed__ int d_t0_6sz_saved;
 
 // ======== 结果计数器：每卡独立 ========
 unsigned long long *d_resultCnt[GPUNUMS];
@@ -593,6 +593,10 @@ __device__ inline bool check_linear(const int *__restrict__ pAiState,
 	}
 	return true;
 }
+
+// Forward declarations for managed symbols used in ConcatAiIter
+__device__ __managed__ extern int d_triplesBits2Ord_dev[1 << 8];
+__device__ __managed__ extern ull d_tuples0_6FullMask_dev;
 
 // ============================================================
 // ConcatAiIter：栈式迭代搜索（用 Ai_state 线性扫描，对齐 CPU 版 ConcatAi）
@@ -748,8 +752,8 @@ __device__ inline void PreSaveForConcat(AzPreEntity *dpreSolveAz, int *d_CNT, in
 			!(Az[iSed] & (1 << 15)))
 		{
 			int val = Az[iSed] - (1 << 14);
-			val -= lowbit(val);
-			int index = log_2[val];
+			val -= dlowbit(val);
+			int index = d_log_2[val];
 			m1 = m1 * 12 + dreorderAll[dCurZ][index];
 		}
 
@@ -824,12 +828,6 @@ __global__ void Generate_A15(AzPreEntity *dpreSolveAz, int *d_CNT, int dn11, int
 		}
 	}
 }
-
-// ============================================================
-// Device globals for tuples0_6 (managed，多卡共享)
-// ============================================================
-__device__ __managed__ int d_triplesBits2Ord_dev[1 << 8];
-__device__ __managed__ ull d_tuples0_6FullMask_dev;
 
 // ============================================================
 // SearchSQS16Kernel：主搜索核函数
@@ -971,7 +969,6 @@ __global__ void SearchSQS16Kernel(
 			}
 		}
 	}
-}
 }
 
 // ============================================================
@@ -1157,20 +1154,21 @@ unsigned long long RunSearch()
 
 		int chunk_size = (n11 * n10 + GPUNUMS - 1) / GPUNUMS;
 		int offset_x = chunk_size * dev_id;
-		int end_x = dMin2((int)(offset_x + chunk_size), n11 * n10) - 1;
+		int end_x = min((int)(offset_x + chunk_size), n11 * n10) - 1;
 
 		if (offset_x > end_x)
 		{
 #pragma omp barrier
 #pragma omp single
 			/* skip */
+			{}
 		}
 		else
 		{
 			int current_n = end_x - offset_x + 1;
 			const dim3 GRID_SIZE = 256;
 			const dim3 BLOCK_SIZE = 256;
-			int nThreads = GRID_SIZE * BLOCK_SIZE;
+			int nThreads = GRID_SIZE.x * BLOCK_SIZE.x;
 			int x_sz = (current_n + nThreads - 1) / nThreads;
 
 			// 分配 per-thread state pool
@@ -1305,6 +1303,14 @@ void PreSolveForAi(int z)
 	UploadAzManaged(z);
 }
 
+// Forward declarations for 0-6 tuples data (used in searchSQS16)
+ull tuples0_6FullMask;
+
+const int TUPLES0_6LIMIT = 10;
+const int TUPLES0_6NUM = 35;
+vector<pair<ull, ull>> tuple0_6states;
+int tuples0_6[TUPLES0_6NUM][4], triples0_6[TUPLES0_6NUM][4], triplesBits2Ord[1 << 8];
+
 // ============================================================
 // GPU 搜索主流程
 // ============================================================
@@ -1361,13 +1367,6 @@ void searchSQS16()
 // ============================================================
 // 生成 0-6 折半边界数据
 // ============================================================
-ull tuples0_6FullMask;
-
-const int TUPLES0_6LIMIT = 10;
-const int TUPLES0_6NUM = 35;
-vector<pair<ull, ull>> tuple0_6states;
-int tuples0_6[TUPLES0_6NUM][4], triples0_6[TUPLES0_6NUM][4], triplesBits2Ord[1 << 8];
-
 void search0_6Tuples(int dep, int las, ull state, ull triplesSelect)
 {
 	tuple0_6states.pb(mp(triplesSelect, state));
