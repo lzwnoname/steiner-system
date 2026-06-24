@@ -751,12 +751,10 @@ void solveForAi()
     }
 
     // 先基于A15的依赖预处理好A7-A13
-    // DEBUG z >= 11
-    for (int z = 13; z >= 7; z--)
-    {
-        printf("Now presolve for A%d:\n", z);
-        PreSolveForAi(z);
-    }
+    printf("Now presolve for A13:\n");
+    PreSolveForAi(13);
+    printf("CPU A13 benchmark done, exiting early.\n");
+    return;
 
     // 生成A14的预处理
     PreSolveForAi(14);
