@@ -15,6 +15,8 @@
 #include <omp.h>
 #include <cuda_runtime.h>
 #include <chrono>
+#include <thread>
+#include <atomic>
 // 考虑搜索合法的(A16, A15) pair
 #define rep(i, a, b) for (int i = (a); i <= (b); ++i)
 #define per(i, a, b) for (int i = (a); i >= (b); --i)
@@ -22,7 +24,8 @@
 #define mp make_pair
 #define all(x) x.begin(), x.end()
 #define GPUNUMS 1
-#define TEST_POS_LIMIT 5000  // 调试用：限制搜索范围，定为0则全量
+#define TEST_POS_LIMIT 0       // 调试用：限制搜索范围，0 则全量
+#define OUT_CAP 10000000ULL    // 每卡最多存储的 SQS(16) 解数（280 B/解；超出的只计数不存储）
 
 using namespace std;
 typedef long long ll;
@@ -162,7 +165,11 @@ void search0_9(int t, int i, ull s)
 				low_bit |= 1ull << a[j];
 			else
 				high_bit |= 1ull << (a[j] - (t >> 1));
-		sol0_9.pb((Sol){s, {high_bit, low_bit}});
+		Sol sv;
+		sv.s = s;
+		sv.sol.first = high_bit;
+		sv.sol.second = low_bit;
+		sol0_9.pb(sv);
 		return;
 	}
 	int las = i == 0 ? -1 : a[i - 1];
@@ -498,18 +505,24 @@ void search0_11Matching(int dep, ull m)
 const int NumsA14 = 35595773;
 struct AzPreEntity
 {
-	int mOrd;
-	int sed[24];
+    int mOrd;
+    int sed[24];
+};
+// device 端压缩实体：桶数据按 mOrd 排序后 mOrd 不再需要；sed 恰 22 项且 state < 2^16，
+// 用 unsigned short 存储。100 B → 44 B，7 层桶显存约 25 GB → 11 GB。
+struct DevAzEntity
+{
+    unsigned short sed[22];
 };
 vector<AzPreEntity> preSolveAz[N_16][MatchingNums_0_11];
 int reorder[N_16][N_16], invReorder[N_16][N_16];
 
 // ======== preSolveAz 持久化：host 暂存 + device 显存 ========
-AzPreEntity *hostAzFlat[16];
+AzPreEntity *hostAzFlat[16];   // 每层排序用 host 缓冲（上传后即释放）
 int *hostAzBucketStart[16];
 int *hostAzBucketSize[16];
 int hostAzTotalCnt[16];
-AzPreEntity *dAzFlat[16];
+DevAzEntity *dAzFlat[16];      // device 端压缩后的桶数据
 int *dAzBucketStart[16];
 int *dAzBucketSize[16];
 
@@ -521,58 +534,9 @@ __managed__ int d_sol0_9_size_saved;
 __managed__ pair<ull, ull> *d_tuple0_6states_managed;
 __managed__ int d_t0_6sz_saved;
 
-// ======== 结果计数器：每卡独立 ========
-unsigned long long *d_resultCnt[GPUNUMS];
-
-// ======== SQS(16) 输出缓冲区（managed，仅捕获第一个解） ========
-__managed__ int d_output_cnt;
-__managed__ ull d_output_ans_state[140];
-__managed__ int d_output_blkCnt;
-__managed__ ull d_output_low_state;
-
-// ======== 调试计数器（managed，定位卡死和数据流） ========
-__managed__ unsigned long long d_dbg_pos_done;     // 已处理 pos 数
-__managed__ unsigned long long d_dbg_filter_pass;  // 通过 disjunction 的 pos
-__managed__ unsigned long long d_dbg_a14_hits;     // 命中的 A14 候选
-__managed__ unsigned long long d_dbg_concat_calls; // ConcatAiIter 调用次数
-__managed__ unsigned long long d_dbg_concat_iters; // ConcatAiIter while 迭代数
-__managed__ unsigned long long d_dbg_km_enter;     // Generate_A15 进入 (k,m) 内层次数
-__managed__ int d_dbg_stuck_pos;                   // 看门狗触发时的 pos
-
-// ======== ConcatAiIter 拼接诊断 ========
-__managed__ ull  d_cat_m1Values[8];              // m1Values[13..7] (第一次调用采样)
-__managed__ int  d_cat_mOrd[8];                  // 对应 mOrd
-__managed__ int  d_cat_bucket_sz[8];             // 桶大小(candCount)
-__managed__ int  d_cat_max_depth;                // 到达的最大深度(d)
-__managed__ int  d_cat_checks;                   // check_linear 调用次数
-__managed__ int  d_cat_pass;                     // check_linear 通过次数
-__managed__ int  d_cat_done;                     // 采样标记 (0=未采样, 1=已采样)
-
-// ======== sol0_9 数据验证（managed） ========
-__managed__ ull d_verify_s_first;   // d_sol0_9[0].s
-__managed__ ull d_verify_s_mid;     // d_sol0_9[n/2].s
-__managed__ ull d_verify_s_last;    // d_sol0_9[n-1].s
-
-// 抓样本：i=0,j=0 的 query_s 序列（最多前 8 个）
-__managed__ ull d_verify_query_s[8];
-__managed__ int d_verify_query_n;
-__managed__ int d_verify_sol_hits;   // (i=0,j=0) 的 sol0_9 命中数
-__managed__ unsigned long long d_dbga14_hits_gen; // Generate_A15 中 sol0_9 命中数
-__managed__ unsigned long long d_threads_done;    // 完成的线程数
-__managed__ ull d_verify_full_mask;
-__managed__ ull d_verify_dM13_0;    // dMatchings13[0]
-__managed__ ull d_verify_dM12_0;    // dMatchings12[0]
-__managed__ ull d_verify_dt11_0;    // dtuple11[a][b][k0].first
-__managed__ ull d_verify_dt10_0;    // dtuple10[c][d][m0].first
-
-// ======== 搜索采样：捕获第一个 (i=0,j=0) 的 Az / m1Values ========
-__managed__ int  d_sample_done;          // 0=未采样, 1=已采样
-__managed__ int  d_sample_az[35];        // Generate_seeds 产出的 Az[0..34] state
-__managed__ ull  d_sample_m1[8];         // m1Values[13]..[7] 对应 zz=13..7
-__managed__ int  d_sample_mord[8];       // dOrdMatchings0_11[m1]
-__managed__ int  d_sample_fillpos[8];    // fillPos (即每层 active 数)
-__managed__ int  d_sample_i, d_sample_j, d_sample_k, d_sample_m;  // 采样时的循环变量
-
+// ======== SQS(16) 解存储：每卡一份 device 输出缓冲 ========
+// 每解 140 个四元组，每四元组 16-bit 元素掩码（4 bits 置位），共 280 B；
+// 搜索结束后分块拷回 host，统一写入 sqs16_solutions.txt（每行一个四元组，4 个 hex 字符）。
 
 // ============================================================
 // Device: extract2tuple3 / check_linear / ConcatAiIter
@@ -617,7 +581,7 @@ __device__ inline tuple3 d_extract2tuple3(int val)
 // pSuffixCnt[16]: 当前每层"有效条目数"，prefix 固定 13
 __device__ inline bool check_linear(const int *__restrict__ pAiState,
 									const int *__restrict__ pSuffixCnt,
-									int z, const int *__restrict__ sed, int size)
+									int z, const unsigned short *__restrict__ sed, int size)
 {
 	int highBitsMask = ((1 << N_16) - 1) ^ ((1 << (z + 1)) - 1);
 	for (int iSed = 0; iSed < size; iSed++)
@@ -670,16 +634,18 @@ __device__ inline bool check_linear(const int *__restrict__ pAiState,
 // 0-6 边界数据：managed 多卡共享（实际定义，不是 forward declaration）
 __device__ __managed__ int d_triplesBits2Ord_dev[1 << 8];
 __device__ __managed__ ull d_tuples0_6FullMask_dev;
+__device__ __managed__ int d_tuples0_6_dev[35][4];   // {0..6} 内 35 个四元组，展开 low_state 存解用
 
 // ============================================================
 // ConcatAiIter：栈式迭代搜索（用 Ai_state 线性扫描，对齐 CPU 版 ConcatAi）
-//   azFlat[16]         : 各 z 层扁平 AzPreEntity 数组（device 显存，z=7..13 有数据）
+//   azFlat[16]         : 各 z 层压缩实体数组（device 显存，z=7..13 有数据）
 //   azBucketStart[16]  : 各 z 层桶首偏移（按 mOrd 索引，device 显存）
 //   azBucketSize[16]   : 各 z 层桶大小（按 mOrd 索引，device 显存）
 //   m1Values[16]       : A14 在各 z 层的 m1 哈希值（已由调用方计算）
+//   d_outBuf/d_outCnt  : 解存储缓冲与计数（slot >= OUT_CAP 时只计数不存储）
 // ============================================================
 __device__ void ConcatAiIter(
-	const AzPreEntity *__restrict__ const *azFlat,
+	const DevAzEntity *__restrict__ const *azFlat,
 	int *__restrict__ const *azBucketStart,
 	int *__restrict__ const *azBucketSize,
 	const ull *__restrict__ m1Values,
@@ -687,16 +653,13 @@ __device__ void ConcatAiIter(
 	int *__restrict__ pSuffixCnt,
 	int *__restrict__ pIdx,
 	int start_z,
-	unsigned long long *__restrict__ d_resultCnt)
+	unsigned short *__restrict__ d_outBuf,
+	unsigned long long *__restrict__ d_outCnt)
 {
 	const int LEN = 13;
 
 	int d = 0;
 	int z = start_z;
-
-	// 看门狗：限制单次不超过 10M 迭代
-	int local_iters = 0;
-	const int WDOG_LIMIT = 100000;
 
 	for (int i = 0; i < 7; i++)
 		pIdx[i] = -1;
@@ -714,26 +677,9 @@ __device__ void ConcatAiIter(
 		candCount[dd] = azBucketSize[zz][mOrd];
 	}
 
-	// 采样第一次调用数据
-	if (atomicExch(&d_cat_done, 1) == 0)
-	{
-		for (int dd = 0; dd < 7; dd++)
-		{
-			int zz = start_z - dd;
-			d_cat_m1Values[dd] = m1Values[zz];
-			d_cat_mOrd[dd] = dOrdMatchings0_11[m1Values[zz]];
-			d_cat_bucket_sz[dd] = candCount[dd];
-		}
-		d_cat_max_depth = -1;
-		d_cat_checks = 0;
-		d_cat_pass = 0;
-	}
-
 	while (d >= 0)
 	{
-		if (++local_iters > WDOG_LIMIT) { d_dbg_stuck_pos = -2; break; }
 		z = start_z - d;
-		if (d > d_cat_max_depth) d_cat_max_depth = d;
 
 		// ---- idx 耗尽：回溯 ----
 		if (candCount[d] < 0 || pIdx[d] >= candCount[d])
@@ -748,13 +694,11 @@ __device__ void ConcatAiIter(
 		}
 
 		// ---- 取候选 ----
-		const AzPreEntity &item = azFlat[z][candStart[d] + pIdx[d]];
+		const DevAzEntity &item = azFlat[z][candStart[d] + pIdx[d]];
 		pIdx[d]++;
 
-		atomicAdd(&d_cat_checks, 1);
 		if (!check_linear(pAiState, pSuffixCnt, z, item.sed, Num_15 - LEN))
 			continue;
-		atomicAdd(&d_cat_pass, 1);
 
 		// ---- check 通过：解码并写入后缀 ----
 		int *layerZ = pAiState + z * Num_15;
@@ -813,36 +757,41 @@ __device__ void ConcatAiIter(
 				}
 			}
 
-		while (ansPos < d_t0_6sz_saved && d_tuple0_6states_managed[ansPos].first == tuples0_6Mask)
-		{
-			atomicAdd(d_resultCnt, 1ULL);
-			// 捕获第一个 SQS(16) 用于输出验证 —— 已注释，仅保留计数
-			// int old = atomicAdd(&d_output_cnt, 1);
-			// if (old == 0)
-			// {
-			// 	for (int kk = 0; kk < blkCnt; kk++)
-			// 		d_output_ans_state[kk] = ans_state[kk];
-			// 	d_output_blkCnt = blkCnt;
-			// 	d_output_low_state = d_tuple0_6states_managed[ansPos].second;
-			// }
-
-			ansPos++;
-		}
+			while (ansPos < d_t0_6sz_saved && d_tuple0_6states_managed[ansPos].first == tuples0_6Mask)
+			{
+				// 存储完整解：blkCnt 个高位四元组 + low_state 展开的 {0..6} 四元组，共 140 个
+				ull slot = atomicAdd(d_outCnt, 1ULL);
+				if (slot < OUT_CAP)
+				{
+					unsigned short *dst = d_outBuf + slot * 140;
+					int w = 0;
+					for (int k = 0; k < blkCnt; k++)
+						dst[w++] = (unsigned short)ans_state[k];
+					ull ls = d_tuple0_6states_managed[ansPos].second;
+					while (ls)
+					{
+						int bIdx = 63 - __clzll(ls);
+						const int *q = d_tuples0_6_dev[bIdx];
+						dst[w++] = (unsigned short)((1 << q[0]) | (1 << q[1]) | (1 << q[2]) | (1 << q[3]));
+						ls &= ls - 1;
+					}
+				}
+				ansPos++;
+			}
 
 			// 撤销后缀，留在当前层
 			pSuffixCnt[z] = LEN;
 		}
-		else
-		{
-			// ---- 下钻 ----
-			d++;
-			int nz = z - 1;
-			// nz 层前缀已由调用方填入 pAiState + nz*Num_15
-			pSuffixCnt[nz] = LEN;
-			pIdx[d] = 0;
-		}
+			else
+			{
+				// ---- 下钻 ----
+				d++;
+				int nz = z - 1;
+				// nz 层前缀已由调用方填入 pAiState + nz*Num_15
+				pSuffixCnt[nz] = LEN;
+				pIdx[d] = 0;
+			}
 	}
-	atomicAdd(&d_dbg_concat_iters, (unsigned long long)local_iters);
 }
 
 // ============================================================
@@ -870,6 +819,8 @@ __device__ inline void PreSaveForConcat(AzPreEntity *dpreSolveAz, int *d_CNT, in
 		saveContent.sed[sedCnt++] = Az[iSed];
 	}
 	int tmp = atomicAdd(d_CNT, 1);
+	if (tmp >= NumsA14 * 2)
+		return; // 超出 dans 容量（实测每层实体 35.7M < 71.2M，正常不会触发）
 	saveContent.mOrd = dOrdMatchings0_11[m1];
 	dpreSolveAz[tmp] = saveContent;
 }
@@ -878,14 +829,6 @@ __global__ void Generate_A15(AzPreEntity *dpreSolveAz, int *d_CNT, int dn11, int
 							 int x_sz, int d_solLength, Sol *d_sol0_9, ull full_mask,
 							 int offset_x, int end_x)
 {
-	// 单线程验证 sol0_9 数据完整性
-	if (blockIdx.x == 0 && threadIdx.x == 0 && d_solLength > 0)
-	{
-		d_verify_s_first = d_sol0_9[0].s;
-		d_verify_s_mid   = d_sol0_9[d_solLength / 2].s;
-		d_verify_s_last  = d_sol0_9[d_solLength - 1].s;
-	}
-
 	int pos_idx = blockIdx.x * blockDim.x + threadIdx.x;
 	int pos_start_idx = pos_idx * x_sz + offset_x;
 	int pos_end_idx = dMin2(offset_x + (pos_idx + 1) * x_sz - 1, end_x);
@@ -893,11 +836,9 @@ __global__ void Generate_A15(AzPreEntity *dpreSolveAz, int *d_CNT, int dn11, int
 	int Az[Num_15];
 	rep(pos, pos_start_idx, pos_end_idx)
 	{
-		atomicAdd(&d_dbg_pos_done, 1ULL);
 		int i = pos / dn10, j = pos % dn10;
 		if ((dMatchings13[i] & dMatchings12[j]) == 0)
 		{
-			atomicAdd(&d_dbg_filter_pass, 1ULL);
 			int a = dmatching13[i][0];
 			int b = dmatching12[j][0];
 			if (a > b)
@@ -913,24 +854,8 @@ __global__ void Generate_A15(AzPreEntity *dpreSolveAz, int *d_CNT, int dn11, int
 				rep(m, 0, 59) if (dtuple10[c][d][m].first && (s & dtuple10[c][d][m].first) == 0)
 				{
 					s |= dtuple10[c][d][m].first;
-					atomicAdd(&d_dbg_km_enter, 1ULL);
 					int l = 0, r = d_solLength - 1, ans = r;
 					ull query_s = full_mask ^ s;
-					// 抓 (i=0, j=0) 前 8 个 (k,m) 样本
-					if (i == 0 && j == 0)
-					{
-						int n = atomicAdd(&d_verify_query_n, 1);
-						if (n < 8) {
-							d_verify_query_s[n] = query_s;
-							if (n == 0) {
-								d_verify_full_mask = full_mask;
-								d_verify_dM13_0 = dMatchings13[0];
-								d_verify_dM12_0 = dMatchings12[0];
-								d_verify_dt11_0 = dtuple11[a][b][k].first;
-								d_verify_dt10_0 = dtuple10[c][d][m].first;
-							}
-						}
-					}
 					while (l <= r)
 					{
 						int mid = (l + r) >> 1;
@@ -944,8 +869,6 @@ __global__ void Generate_A15(AzPreEntity *dpreSolveAz, int *d_CNT, int dn11, int
 					}
 					while (ans < d_solLength && d_sol0_9[ans].s == query_s)
 					{
-						if (i == 0 && j == 0) atomicAdd(&d_verify_sol_hits, 1);
-						atomicAdd(&d_dbga14_hits_gen, 1ULL);
 						Generate_seeds(dsedOf13[i],
 									   dsedOf12[j],
 									   dsedOf11[a][b][k],
@@ -961,7 +884,6 @@ __global__ void Generate_A15(AzPreEntity *dpreSolveAz, int *d_CNT, int dn11, int
 				s ^= dtuple11[a][b][k].first;
 			}
 		}
-		atomicAdd(&d_threads_done, 1ULL);
 	}
 }
 
@@ -969,14 +891,15 @@ __global__ void Generate_A15(AzPreEntity *dpreSolveAz, int *d_CNT, int dn11, int
 // SearchSQS16Kernel：主搜索核函数
 //   azFlat_dev[16], azBucketStart_dev[16], azBucketSize_dev[16] : z=7..13
 //   threadStatePool : 每线程 Ai_state(16*35) + suffixCnt(16) + idx(7) ints
-//   d_resultCnt : 原子计数器
+//   d_outBuf/d_outCnt : 每卡解存储缓冲与计数
 // ============================================================
 __global__ void SearchSQS16Kernel(
-	AzPreEntity *__restrict__ const *azFlat_dev,
+	DevAzEntity *__restrict__ const *azFlat_dev,
 	int *__restrict__ const *azBucketStart_dev,
 	int *__restrict__ const *azBucketSize_dev,
 	int *__restrict__ threadStatePool,
-	unsigned long long *__restrict__ d_resultCnt,
+	unsigned short *__restrict__ d_outBuf,
+	unsigned long long *__restrict__ d_outCnt,
 	int n11, int n10,
 	int x_sz, int d_solLength, Sol *__restrict__ d_sol0_9,
 	ull full_mask,
@@ -1010,7 +933,6 @@ __global__ void SearchSQS16Kernel(
 		int i = pos / n10, j = pos % n10;
 		if ((dMatchings13[i] & dMatchings12[j]) == 0)
 		{
-			atomicAdd(&d_dbg_filter_pass, 1ULL);
 			int a = dmatching13[i][0];
 			int b = dmatching12[j][0];
 			if (a > b)
@@ -1042,8 +964,6 @@ __global__ void SearchSQS16Kernel(
 					
 					while (ans < d_solLength && d_sol0_9[ans].s == query_s)
 					{
-						atomicAdd(&d_dbg_a14_hits, 1ULL);
-
 						// ==== Rebuild Ai[14] ====
 						Generate_seeds(dsedOf13[i], dsedOf12[j],
 									   dsedOf11[a][b][k], dsedOf10[c][d][m],
@@ -1097,27 +1017,11 @@ __global__ void SearchSQS16Kernel(
 							pSuffixCnt[zz] = fillPos;
 						}
 
-						// ==== DIAG: 采样第一个 (i=0,j=0) 候选 ====
-						if (atomicExch(&d_sample_done, 1) == 0)
-						{
-							rep(jj, 0, Num_15 - 1) d_sample_az[jj] = Az[jj];
-							for (int zz = 13; zz >= 7; zz--)
-							{
-								int idx = 13 - zz;
-								d_sample_m1[idx] = m1Values[zz];
-								d_sample_mord[idx] = dOrdMatchings0_11[m1Values[zz]];
-								d_sample_fillpos[idx] = pSuffixCnt[zz];
-							}
-							d_sample_i = i; d_sample_j = j;
-							d_sample_k = k; d_sample_m = m;
-						}
-
 						// ==== Run search ====
-						atomicAdd(&d_dbg_concat_calls, 1ULL);
 						ConcatAiIter(azFlat_dev, azBucketStart_dev, azBucketSize_dev,
 										  m1Values,
 										  pAiState, pSuffixCnt, pIdx,
-										  13, d_resultCnt);
+										  13, d_outBuf, d_outCnt);
 
 						ans++;
 					}
@@ -1126,7 +1030,6 @@ __global__ void SearchSQS16Kernel(
 				s ^= dtuple11[a][b][k].first;
 			}
 		}
-		atomicAdd(&d_dbg_pos_done, 1ULL);
 	}
 }
 
@@ -1156,24 +1059,8 @@ void cudaMemoryTransfer_preSolve(int z)
 	cudaMemcpy(&dCurZ, &tmpZ, sizeof(int), cudaMemcpyHostToDevice);
 	cudaMemcpy(dOrdMatchings0_11, ordMatchings0_11, sizeof(ordMatchings0_11), cudaMemcpyHostToDevice);
 
-	cudaMemAdvise(d_element0_9, sizeof(int) * 120 * 3, cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(d_sed_map, sizeof(int) * 16, cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(d_log_2, sizeof(int) * (1 << 21), cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(d_son_blocks, sizeof(Pii) * 7, cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-
-	cudaMemAdvise(dMatchings13, sizeof(ull) * n11, cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(dMatchings12, sizeof(ull) * n10, cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(dtuple11, sizeof(dtuple11), cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(dtuple10, sizeof(dtuple10), cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(dmatching13, sizeof(dmatching13), cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(dmatching12, sizeof(dmatching12), cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(dsedOf13, sizeof(dsedOf13), cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(dsedOf12, sizeof(dsedOf12), cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(dsedOf11, sizeof(dsedOf11), cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(dsedOf10, sizeof(dsedOf10), cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(dreorderAll, sizeof(dreorderAll), cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-	cudaMemAdvise(dOrdMatchings0_11, sizeof(dOrdMatchings0_11), cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-
+	// 注：原 cudaMemAdvise(…, cudaMemAdviseSetReadMostly, cudaCpuDeviceId) 已移除——
+	// CUDA 13 删除了 int 设备号重载，且这些表都很小（≤8 MB），单卡下提示无收益。
 	cudaError_t cudaerr = cudaGetLastError();
 	printf("CUDA Error1: \"%s\".\n", cudaGetErrorString(cudaerr));
 }
@@ -1210,19 +1097,7 @@ void cudaPreSolveAz(int dev_id, int z, AzPreEntity *hostBuf, int *hostCnt)
 	if (err != cudaSuccess) { printf("  cudaMalloc dans FAILED: %s\n", cudaGetErrorString(err)); cudaFree(d_sol0_9); return; }
 	err = cudaMalloc(&d_CNT, sizeof(int));
 	if (err != cudaSuccess) { printf("  cudaMalloc d_CNT FAILED: %s\n", cudaGetErrorString(err)); cudaFree(d_sol0_9); cudaFree(dans); return; }
-	cudaMemset(d_CNT, 0, sizeof(int));   // ★ 关键：把 d_CNT 清零
-	// 清零 Generate_A15 诊断计数器
-	d_dbg_km_enter = 0;
-	d_dbg_a14_hits = 0;
-	d_dbg_pos_done = 0;
-	d_dbg_filter_pass = 0;
-	d_dbga14_hits_gen = 0;
-	d_threads_done = 0;
-	d_verify_query_n = 0;
-	d_verify_sol_hits = 0;
-	for (int t = 0; t < 8; t++) d_verify_query_s[t] = 0;
-	d_verify_full_mask = 0;
-	d_verify_dM13_0 = d_verify_dM12_0 = d_verify_dt11_0 = d_verify_dt10_0 = 0;
+	cudaMemset(d_CNT, 0, sizeof(int));
 
 	Generate_A15<<<GRID_SIZE, BLOCK_SIZE>>>(dans, d_CNT, n11, n10, x_sz, sol0_9.size(), d_sol0_9, full_mask,
 											offset_x, end_x);
@@ -1236,75 +1111,6 @@ void cudaPreSolveAz(int dev_id, int z, AzPreEntity *hostBuf, int *hostCnt)
 	cudaMemcpy(&cnt, d_CNT, sizeof(int), cudaMemcpyDeviceToHost);
 	cudaMemcpy(hostBuf, dans, sizeof(AzPreEntity) * cnt, cudaMemcpyDeviceToHost);
 	*hostCnt = cnt;
-
-	// 调试/验证输出已注释
-	/*
-	printf("  [diag] pos=%llu filt=%llu km=%llu solhit=%llu ent=%d thr=%llu (n11*n10=%d)\n",
-	       d_dbg_pos_done, d_dbg_filter_pass, d_dbg_km_enter, d_dbga14_hits_gen, cnt, d_threads_done, n11*n10);
-	if (sol0_9.size() > 0)
-	{
-		size_t n = sol0_9.size();
-		ull h_first = sol0_9[0].s, h_mid = sol0_9[n/2].s, h_last = sol0_9[n-1].s;
-		printf("  [verify] host s[0]=0x%016llx  s[%zu]=0x%016llx  s[%zu]=0x%016llx\n",
-			   h_first, n/2, h_mid, n-1, h_last);
-		printf("  [verify] dev  s[0]=0x%016llx  s[%zu]=0x%016llx  s[%zu]=0x%016llx  %s\n",
-			   d_verify_s_first, n/2, d_verify_s_mid, n-1, d_verify_s_last,
-			   (h_first==d_verify_s_first && h_mid==d_verify_s_mid && h_last==d_verify_s_last) ? "MATCH" : "MISMATCH!");
-	}
-
-	{
-		printf("  [sample i=0,j=0] full_mask: host=0x%016llx dev=0x%016llx %s\n",
-			   full_mask, d_verify_full_mask,
-			   (full_mask == d_verify_full_mask ? "OK" : "DIFF"));
-		printf("  [sample i=0,j=0] dM13[0]: host=0x%016llx dev=0x%016llx %s\n",
-			   Matchings13[0], d_verify_dM13_0,
-			   (Matchings13[0] == d_verify_dM13_0 ? "OK" : "DIFF"));
-		printf("  [sample i=0,j=0] dM12[0]: host=0x%016llx dev=0x%016llx %s\n",
-			   Matchings12[0], d_verify_dM12_0,
-			   (Matchings12[0] == d_verify_dM12_0 ? "OK" : "DIFF"));
-
-		if (n11 > 0 && n10 > 0 && (Matchings13[0] & Matchings12[0]) == 0)
-		{
-			int aa = matching13[0][0], bb = matching12[0][0];
-			if (aa > bb) { int t = aa; aa = bb; bb = t; }
-			int cc = matching13[0][1], dd = matching12[0][1];
-			if (cc > dd) { int t = cc; cc = dd; dd = t; }
-			ull s = Matchings13[0] | Matchings12[0];
-			int km_total = 0, sol_hit_total = 0;
-			ull h_qs[8] = {0};
-			int captured = 0;
-			for (int k = 0; k < 60; k++) {
-				if (tuple11[aa][bb][k].first && (s & tuple11[aa][bb][k].first) == 0) {
-					ull s2 = s | tuple11[aa][bb][k].first;
-					for (int m = 0; m < 60; m++) {
-						if (tuple10[cc][dd][m].first && (s2 & tuple10[cc][dd][m].first) == 0) {
-							ull s3 = s2 | tuple10[cc][dd][m].first;
-							ull qs = full_mask ^ s3;
-							if (captured < 8) h_qs[captured++] = qs;
-							km_total++;
-							size_t lo = 0, hi = sol0_9.size();
-							while (lo < hi) {
-								size_t mid = (lo + hi) / 2;
-								if (sol0_9[mid].s < qs) lo = mid + 1;
-								else hi = mid;
-							}
-							while (lo < sol0_9.size() && sol0_9[lo].s == qs) {
-								sol_hit_total++; lo++;
-							}
-						}
-					}
-				}
-			}
-			printf("  [sample i=0,j=0] HOST: km=%d sol_hits=%d  DEV: km=%d sol_hits=%d  total_entities=%d\n",
-				   km_total, sol_hit_total, d_verify_query_n, d_verify_sol_hits, *hostCnt);
-			int show = captured < 8 ? captured : 8;
-			for (int t = 0; t < show; t++) {
-				printf("    [%d] host_qs=0x%016llx dev_qs=0x%016llx %s\n", t, h_qs[t], d_verify_query_s[t],
-					   (h_qs[t] == d_verify_query_s[t] ? "OK" : "DIFF"));
-			}
-		}
-	}
-	*/
 
 	cudaFree(d_sol0_9);
 	cudaFree(d_CNT);
@@ -1354,28 +1160,122 @@ void BuildAzCSR(int z, AzPreEntity *flatBuf, int totalCnt)
 }
 
 // ============================================================
-// UploadAzDevice：将 host CSR 拷贝到 device 显存（cudaMalloc，避免 managed page fault）
+// UploadAzDevice：host 排序后的 AzPreEntity(100B) 压缩为 DevAzEntity(44B) 上传；
+// 上传后释放该层的 host 排序缓冲（~3.6 GB/层），控制 host 内存峰值。
 // ============================================================
 void UploadAzDevice(int z)
 {
-	cudaMalloc(&dAzFlat[z], sizeof(AzPreEntity) * hostAzTotalCnt[z]);
-	cudaMemcpy(dAzFlat[z], hostAzFlat[z],
-			   sizeof(AzPreEntity) * hostAzTotalCnt[z], cudaMemcpyHostToDevice);
+	DevAzEntity *tmp = (DevAzEntity *)malloc(sizeof(DevAzEntity) * hostAzTotalCnt[z]);
+	if (!tmp)
+	{
+		printf("UploadAzDevice A%d: host malloc (%.2f GB) FAILED\n", z,
+			   sizeof(DevAzEntity) * hostAzTotalCnt[z] / 1e9);
+		exit(1);
+	}
+	for (int i = 0; i < hostAzTotalCnt[z]; i++)
+		for (int j = 0; j < 22; j++)
+			tmp[i].sed[j] = (unsigned short)hostAzFlat[z][i].sed[j];
 
-	cudaMalloc(&dAzBucketStart[z], sizeof(int) * MatchingNums_0_11);
-	cudaMalloc(&dAzBucketSize[z], sizeof(int) * MatchingNums_0_11);
+	cudaError_t err = cudaMalloc(&dAzFlat[z], sizeof(DevAzEntity) * hostAzTotalCnt[z]);
+	if (err != cudaSuccess)
+	{
+		printf("UploadAzDevice A%d: cudaMalloc dAzFlat (%.2f GB) FAILED: %s\n", z,
+			   sizeof(DevAzEntity) * hostAzTotalCnt[z] / 1e9, cudaGetErrorString(err));
+		exit(1);
+	}
+	cudaMemcpy(dAzFlat[z], tmp, sizeof(DevAzEntity) * hostAzTotalCnt[z], cudaMemcpyHostToDevice);
+	free(tmp);
+	free(hostAzFlat[z]);
+	hostAzFlat[z] = NULL; // host 排序缓冲使命结束
 
+	err = cudaMalloc(&dAzBucketStart[z], sizeof(int) * MatchingNums_0_11);
+	if (err != cudaSuccess)
+	{
+		printf("UploadAzDevice A%d: cudaMalloc bucketStart FAILED: %s\n", z, cudaGetErrorString(err));
+		exit(1);
+	}
+	err = cudaMalloc(&dAzBucketSize[z], sizeof(int) * MatchingNums_0_11);
+	if (err != cudaSuccess)
+	{
+		printf("UploadAzDevice A%d: cudaMalloc bucketSize FAILED: %s\n", z, cudaGetErrorString(err));
+		exit(1);
+	}
 	cudaMemcpy(dAzBucketStart[z], hostAzBucketStart[z], sizeof(int) * MatchingNums_0_11, cudaMemcpyHostToDevice);
 	cudaMemcpy(dAzBucketSize[z], hostAzBucketSize[z], sizeof(int) * MatchingNums_0_11, cudaMemcpyHostToDevice);
 }
 
 // ============================================================
-// RunSearch：4 卡 + 多线程 search kernel，统计 SQS(16) 总数
+// 搜索进度上报：每搜到 100 万个 SQS(16) 打印一次当前总数。
+// 解计数器 d_outCnt 在 device 上被 kernel 原子递增；进度线程用
+// cudaStreamNonBlocking 的小拷贝并发轮询——非阻塞流与 kernel 所在的
+// 默认流无隐式同步，不会互相阻塞；上报线程在所有卡释放资源后才退出，
+// 轮询期间指针恒有效，无竞态。
+// ============================================================
+unsigned long long *g_pollCnt[GPUNUMS] = {};
+std::atomic<bool> g_searchRunning(false);
+
+void ProgressReporter()
+{
+	cudaStream_t pollStream[GPUNUMS];
+	for (int d = 0; d < GPUNUMS; d++)
+	{
+		cudaSetDevice(d);
+		cudaStreamCreateWithFlags(&pollStream[d], cudaStreamNonBlocking);
+	}
+	const unsigned long long REPORT_STEP = 1000000ULL;
+	unsigned long long reportedSteps = 0;
+	while (g_searchRunning.load())
+	{
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+		if (!g_searchRunning.load())
+			break;
+		unsigned long long total = 0;
+		for (int d = 0; d < GPUNUMS; d++)
+		{
+			if (!g_pollCnt[d])
+				continue;
+			unsigned long long v = 0;
+			cudaSetDevice(d);
+			cudaMemcpyAsync(&v, g_pollCnt[d], sizeof(unsigned long long),
+							cudaMemcpyDeviceToHost, pollStream[d]);
+			cudaStreamSynchronize(pollStream[d]);
+			total += v;
+		}
+		if (total / REPORT_STEP > reportedSteps)
+		{
+			reportedSteps = total / REPORT_STEP;
+			printf("[progress] SQS(16) found so far: %llu\n", total);
+			fflush(stdout);
+		}
+	}
+	for (int d = 0; d < GPUNUMS; d++)
+	{
+		cudaSetDevice(d);
+		cudaStreamDestroy(pollStream[d]);
+	}
+}
+
+// ============================================================
+// RunSearch：多卡并行 search kernel，统计 SQS(16) 总数并把完整解写入文件
+// 输出格式：每解 140 行，每行一个四元组（4 个 hex 字符），
+//           可用 head -140 sqs16_solutions.txt | ./check 验证单个解
 // ============================================================
 unsigned long long RunSearch()
 {
 	unsigned long long totalCnt = 0;
 	unsigned long long hostCnt[GPUNUMS] = {0};
+	unsigned long long capturedCnt[GPUNUMS] = {0};
+
+	FILE *fout = fopen("sqs16_solutions.txt", "w");
+	if (!fout)
+	{
+		printf("ERROR: cannot open sqs16_solutions.txt for writing\n");
+		exit(1);
+	}
+
+	// 进度上报线程：搜索期间每搜到 100 万个解打印一次当前总数
+	g_searchRunning.store(true);
+	std::thread reporter(ProgressReporter);
 
 #pragma omp parallel num_threads(GPUNUMS)
 	{
@@ -1390,20 +1290,13 @@ unsigned long long RunSearch()
 		int total_pos = n11 * n10;
 		int chunk_size = (total_pos + GPUNUMS - 1) / GPUNUMS;
 		int offset_x = chunk_size * dev_id;
-	int end_x = min((int)(offset_x + chunk_size), total_pos) - 1;
+		int end_x = min((int)(offset_x + chunk_size), total_pos) - 1;
 #if TEST_POS_LIMIT > 0
-	if (end_x > offset_x + TEST_POS_LIMIT - 1) end_x = offset_x + TEST_POS_LIMIT - 1;
+		if (end_x > offset_x + TEST_POS_LIMIT - 1) end_x = offset_x + TEST_POS_LIMIT - 1;
 #endif
-	printf("GPU%d: search range [%d, %d] / %d\n", dev_id, offset_x, end_x, total_pos);
+		printf("GPU%d: search range [%d, %d] / %d\n", dev_id, offset_x, end_x, total_pos);
 
-		if (offset_x > end_x)
-		{
-#pragma omp barrier
-#pragma omp single
-			/* skip */
-			{}
-		}
-		else
+		if (offset_x <= end_x)
 		{
 			int current_n = end_x - offset_x + 1;
 			const dim3 GRID_SIZE = 256;
@@ -1415,15 +1308,35 @@ unsigned long long RunSearch()
 			int poolPerThread = PER_THREAD_AISTATE_SIZE + PER_THREAD_SUFFIXCNT_SIZE + PER_THREAD_IDX_SIZE;
 			size_t poolSize = (size_t)nThreads * poolPerThread * sizeof(int);
 			int *d_threadPool;
-			cudaMalloc(&d_threadPool, poolSize);
+			cudaerr_run = cudaMalloc(&d_threadPool, poolSize);
+			if (cudaerr_run != cudaSuccess)
+			{
+				printf("GPU%d: cudaMalloc threadPool FAILED: %s\n", dev_id, cudaGetErrorString(cudaerr_run));
+				exit(1);
+			}
 			cudaMemset(d_threadPool, 0, poolSize);
 
-			// d_resultCnt
-			cudaMalloc(&d_resultCnt[dev_id], sizeof(unsigned long long));
-			cudaMemset(d_resultCnt[dev_id], 0, sizeof(unsigned long long));
+			// 每卡解存储缓冲：OUT_CAP 个解 × 140 个 ushort 四元组掩码（280 B/解）
+			unsigned short *d_outBuf;
+			unsigned long long *d_outCnt;
+			cudaerr_run = cudaMalloc(&d_outBuf, sizeof(unsigned short) * 140 * OUT_CAP);
+			if (cudaerr_run != cudaSuccess)
+			{
+				printf("GPU%d: cudaMalloc d_outBuf (%.2f GB) FAILED: %s\n", dev_id,
+					   sizeof(unsigned short) * 140 * OUT_CAP / 1e9, cudaGetErrorString(cudaerr_run));
+				exit(1);
+			}
+			cudaerr_run = cudaMalloc(&d_outCnt, sizeof(unsigned long long));
+			if (cudaerr_run != cudaSuccess)
+			{
+				printf("GPU%d: cudaMalloc d_outCnt FAILED: %s\n", dev_id, cudaGetErrorString(cudaerr_run));
+				exit(1);
+			}
+			cudaMemset(d_outCnt, 0, sizeof(unsigned long long));
+			g_pollCnt[dev_id] = d_outCnt; // 注册给进度线程轮询
 
 			// 构建设备端 azFlat/azBucketStart/azBucketSize 指针数组
-			AzPreEntity *h_azFlat[16];
+			DevAzEntity *h_azFlat[16];
 			int *h_azBucketStart[16];
 			int *h_azBucketSize[16];
 			for (int zz = 7; zz <= 13; zz++)
@@ -1432,29 +1345,20 @@ unsigned long long RunSearch()
 				h_azBucketStart[zz] = dAzBucketStart[zz];
 				h_azBucketSize[zz] = dAzBucketSize[zz];
 			}
-			AzPreEntity **d_azFlat;
+			DevAzEntity **d_azFlat;
 			int **d_azBucketStart;
 			int **d_azBucketSize;
-			cudaMalloc(&d_azFlat, sizeof(AzPreEntity *) * 16);
+			cudaMalloc(&d_azFlat, sizeof(DevAzEntity *) * 16);
 			cudaMalloc(&d_azBucketStart, sizeof(int *) * 16);
 			cudaMalloc(&d_azBucketSize, sizeof(int *) * 16);
-			cudaMemcpy(d_azFlat, h_azFlat, sizeof(AzPreEntity *) * 16, cudaMemcpyHostToDevice);
+			cudaMemcpy(d_azFlat, h_azFlat, sizeof(DevAzEntity *) * 16, cudaMemcpyHostToDevice);
 			cudaMemcpy(d_azBucketStart, h_azBucketStart, sizeof(int *) * 16, cudaMemcpyHostToDevice);
 			cudaMemcpy(d_azBucketSize, h_azBucketSize, sizeof(int *) * 16, cudaMemcpyHostToDevice);
-
-			// 清零调试计数器
-			d_dbg_pos_done = 0;
-			d_dbg_filter_pass = 0;
-			d_dbg_a14_hits = 0;
-			d_dbg_concat_calls = 0;
-			d_dbg_concat_iters = 0;
-			d_dbg_stuck_pos = -1;
-			d_cat_done = 0;
 
 			SearchSQS16Kernel<<<GRID_SIZE, BLOCK_SIZE>>>(
 				d_azFlat, d_azBucketStart, d_azBucketSize,
 				d_threadPool,
-				d_resultCnt[dev_id],
+				d_outBuf, d_outCnt,
 				n11, n10, x_sz, d_sol0_9_size_saved, d_sol0_9_managed,
 				full_mask, offset_x, end_x);
 
@@ -1463,67 +1367,79 @@ unsigned long long RunSearch()
 				printf("Search kernel GPU%d failed: \"%s\".\n", dev_id, cudaGetErrorString(cudaerr_run));
 			cudaDeviceSynchronize();
 
-			// 所有 debug printf 已注释
-			// printf("GPU%d debug: pos=%llu  filter=%llu  a14=%llu  concat=%llu  iters=%llu  stuck=%d\n",
-			// 	   dev_id, d_dbg_pos_done, d_dbg_filter_pass, d_dbg_a14_hits,
-			// 	   d_dbg_concat_calls, d_dbg_concat_iters, d_dbg_stuck_pos);
-			// printf("GPU%d concat: max_depth=%d  checks=%d  pass=%d  done=%d\n",
-			// 	   dev_id, d_cat_max_depth, d_cat_checks, d_cat_pass, d_cat_done);
-			// if (d_cat_done)
-			// {
-			// 	printf("GPU%d buckets: zz", dev_id);
-			// 	for (int dd = 6; dd >= 0; dd--) printf("  z=%d", 13 - dd);
-			// 	printf("\nGPU%d m1Values:", dev_id);
-			// 	for (int dd = 6; dd >= 0; dd--) printf(" %llu", d_cat_m1Values[dd]);
-			// 	printf("\nGPU%d mOrd:    ", dev_id);
-			// 	for (int dd = 6; dd >= 0; dd--) printf(" %d", d_cat_mOrd[dd]);
-			// 	printf("\nGPU%d bucket_sz:", dev_id);
-			// 	for (int dd = 6; dd >= 0; dd--) printf(" %d", d_cat_bucket_sz[dd]);
-			// 	printf("\n");
-			// }
+			// 拷回解计数；解数据分块拷回并写入文件（critical 串行写，拷回在 critical 外）
+			unsigned long long cnt = 0;
+			cudaMemcpy(&cnt, d_outCnt, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+			hostCnt[dev_id] = cnt;
+			unsigned long long captured = cnt < OUT_CAP ? cnt : OUT_CAP;
+			capturedCnt[dev_id] = captured;
 
-			// DIAG: 打印搜索内核中 Az / m1Values 采样
-			// if (d_sample_done)
-			// {
-			// 	printf("\n[DIAG] GPU%d sample (i=%d,j=%d,k=%d,m=%d) Az[0..34]:\n",
-			// 		   dev_id, d_sample_i, d_sample_j, d_sample_k, d_sample_m);
-			// 	for (int t = 0; t < 35; t++)
-			// 	{
-			// 		int st = d_sample_az[t];
-			// 		int ba = st & -st; int a = log_2[ba < (1<<21) ? ba : ba>>21] + (ba < (1<<21) ? 0 : 21);
-			// 		int bb = (st-ba) & -(st-ba); int b = log_2[bb < (1<<21) ? bb : bb>>21] + (bb < (1<<21) ? 0 : 21);
-			// 		int cc = st - ba - bb; int c = log_2[cc < (1<<21) ? cc : cc>>21] + (cc < (1<<21) ? 0 : 21);
-			// 		printf("  [%2d] (%2d,%2d,%2d) st=0x%08x\n", t, a, b, c, st);
-			// 	}
-			// 	printf("[DIAG] m1Values per layer:\n");
-			// 	for (int zz = 13; zz >= 7; zz--)
-			// 	{
-			// 		int idx = 13 - zz;
-			// 		printf("  z=%2d: m1=%llu  mOrd=%d  fillPos=%d\n",
-			// 			   zz, d_sample_m1[idx], d_sample_mord[idx], d_sample_fillpos[idx]);
-			// 	}
-			// 	else
-			// 	{
-			// 		printf("\n[DIAG] WARNING: d_sample_done=0 (no sample captured in kernel)\n");
-			// 	}
-
-			cudaMemcpy(&hostCnt[dev_id], d_resultCnt[dev_id], sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+			const unsigned long long CHUNK = 1000000ULL; // 每块 100 万解（~280 MB host）
+			unsigned short *hbuf = (unsigned short *)malloc(sizeof(unsigned short) * 140 * CHUNK);
+			if (!hbuf)
+			{
+				printf("GPU%d: host malloc chunk buffer FAILED\n", dev_id);
+				exit(1);
+			}
+			for (unsigned long long off = 0; off < captured; off += CHUNK)
+			{
+				unsigned long long n = captured - off < CHUNK ? captured - off : CHUNK;
+				cudaMemcpy(hbuf, d_outBuf + off * 140, sizeof(unsigned short) * 140 * n, cudaMemcpyDeviceToHost);
+#pragma omp critical(file_write)
+				{
+					for (unsigned long long sIdx = 0; sIdx < n; sIdx++)
+					{
+						const unsigned short *sol = hbuf + sIdx * 140;
+						for (int b = 0; b < 140; b++)
+						{
+							int stv = sol[b];
+							char line[5];
+							int p = 0;
+							while (stv)
+							{
+								int lv = stv & -stv;
+								line[p++] = int2ch(log_2[lv]);
+								stv ^= lv;
+							}
+							line[4] = '\n';
+							fwrite(line, 1, 5, fout);
+						}
+					}
+				}
+			}
+			free(hbuf);
 
 			auto fi = chrono::steady_clock::now();
-			printf("GPU%d search done in %lld ms, hit count=%llu\n", dev_id,
+			printf("GPU%d search done in %lld ms, solutions=%llu (captured %llu to file)\n", dev_id,
 				   (long long)chrono::duration_cast<std::chrono::milliseconds>(fi - st).count(),
-				   hostCnt[dev_id]);
+				   hostCnt[dev_id], capturedCnt[dev_id]);
 
 			cudaFree(d_threadPool);
-			cudaFree(d_resultCnt[dev_id]);
+			cudaFree(d_outBuf);
+			cudaFree(d_outCnt);
 			cudaFree(d_azFlat);
 			cudaFree(d_azBucketStart);
 			cudaFree(d_azBucketSize);
 		}
 	}
 
+	// 搜索与资源释放全部结束：停掉进度线程（期间指针恒有效，无竞态）
+	g_searchRunning.store(false);
+	reporter.join();
+	for (int d = 0; d < GPUNUMS; d++)
+		g_pollCnt[d] = NULL;
+
+	fclose(fout);
+
 	for (int i = 0; i < GPUNUMS; i++)
 		totalCnt += hostCnt[i];
+	unsigned long long capturedTotal = 0;
+	for (int i = 0; i < GPUNUMS; i++)
+		capturedTotal += capturedCnt[i];
+	if (capturedTotal < totalCnt)
+		printf("WARNING: only %llu of %llu solutions stored (OUT_CAP=%llu per GPU exceeded; "
+			   "raise OUT_CAP or run in ranges)\n",
+			   capturedTotal, totalCnt, OUT_CAP);
 	return totalCnt;
 }
 
@@ -1636,68 +1552,23 @@ void searchSQS16()
 	cudaMallocManaged(&d_sol0_9_managed, sizeof(Sol) * sol0_9.size());
 	cudaMemcpy(d_sol0_9_managed, &sol0_9[0], sizeof(Sol) * sol0_9.size(), cudaMemcpyHostToDevice);
 	d_sol0_9_size_saved = sol0_9.size();
-	for (int dev = 0; dev < GPUNUMS; dev++)
-		cudaMemAdvise(d_sol0_9_managed, sizeof(Sol) * sol0_9.size(), cudaMemAdviseSetReadMostly, dev);
 
 	// tuple0_6states: managed，多卡共享
 	cudaMallocManaged(&d_tuple0_6states_managed, sizeof(pair<ull, ull>) * tuple0_6states.size());
 	cudaMemcpy(d_tuple0_6states_managed, &tuple0_6states[0], sizeof(pair<ull, ull>) * tuple0_6states.size(), cudaMemcpyHostToDevice);
 	d_t0_6sz_saved = tuple0_6states.size();
-	for (int dev = 0; dev < GPUNUMS; dev++)
-		cudaMemAdvise(d_tuple0_6states_managed, sizeof(pair<ull, ull>) * tuple0_6states.size(), cudaMemAdviseSetReadMostly, dev);
 
-	// triplesBits2Ord + FullMask → managed 变量直接赋值
+	// triplesBits2Ord + FullMask + tuples0_6 表 → managed 变量直接赋值（存解时展开 low_state 用）
 	memcpy(d_triplesBits2Ord_dev, triplesBits2Ord, sizeof(int) * (1 << 8));
 	d_tuples0_6FullMask_dev = tuples0_6FullMask;
-
-	// 清零 SQS(16) 输出计数器
-	d_output_cnt = 0;
+	memcpy(d_tuples0_6_dev, tuples0_6, sizeof(int) * 35 * 4);
 
 	printf("Starting GPU search on %d GPU(s)...\n", GPUNUMS);
 	unsigned long long total = RunSearch();
 	printf("\n========================================\n");
 	printf("Total SQS(16) found: %llu\n", total);
+	printf("Solutions written to sqs16_solutions.txt (140 lines each)\n");
 	printf("========================================\n");
-
-	// SQS(16) 输出已注释：仅保留统计计数逻辑（Total SQS(16) found 已由 RunSearch 返回）
-	/*
-	if (d_output_cnt > 0)
-	{
-		FILE *fout = fopen("sqs_output.txt", "w");
-		if (fout)
-		{
-			for (int i = 0; i < d_output_blkCnt; i++)
-			{
-				ull v = d_output_ans_state[i];
-				while (v)
-				{
-					ull lv = v & -v;
-					int elem = log_2[lv < (1ull << 21) ? lv : lv >> 21] + (lv < (1ull << 21) ? 0 : 21);
-					fprintf(fout, "%c", int2ch(elem));
-					v ^= lv;
-				}
-				fprintf(fout, "\n");
-			}
-			ull ls = d_output_low_state;
-			while (ls)
-			{
-				ull lv = ls & -ls;
-				int idx = (lv < (1ull << 21)) ? log_2[lv] : log_2[lv >> 21] + 21;
-				for (int j = 0; j < 4; j++)
-					fprintf(fout, "%c", int2ch(tuples0_6[idx][j]));
-				fprintf(fout, "\n");
-				ls ^= lv;
-			}
-			fclose(fout);
-			printf("First SQS(16) written to sqs_output.txt (%d blocks total)\n",
-				   d_output_blkCnt + __builtin_popcountll(d_output_low_state));
-		}
-	}
-	else
-	{
-		printf("No SQS(16) captured in this search range.\n");
-	}
-	*/
 }
 
 // ============================================================
